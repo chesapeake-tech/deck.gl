@@ -14,7 +14,8 @@ import {
   log,
   Material,
   TextureSource,
-  UpdateParameters
+  UpdateParameters,
+  _GlobeViewport as GlobeViewport
 } from '@deck.gl/core';
 import {SimpleMeshLayer} from '@deck.gl/mesh-layers';
 import type {MeshAttributes} from '@loaders.gl/schema';
@@ -231,6 +232,21 @@ export default class TerrainLayer<ExtraPropsT extends {} = {}> extends Composite
     }
 
     const [mesh, texture] = data;
+
+    const {viewport} = this.context;
+    // Bounds are baked with projectFlat. In GlobeView projectFlat is identity,
+    // so tiled terrain meshes are in lng/lat degrees instead of common-space
+    // web-mercator units.
+    const isGlobe = viewport instanceof GlobeViewport;
+    const boundingBox = (mesh as MeshWithBoundingBox | null)?.header?.boundingBox;
+    const hasLngLatBounds =
+      boundingBox &&
+      boundingBox.every(
+        ([x, y]) =>
+          x >= -MAX_LONGITUDE && x <= MAX_LONGITUDE && y >= -MAX_LATITUDE && y <= MAX_LATITUDE
+      );
+    const coordinateSystem =
+      isGlobe && hasLngLatBounds ? COORDINATE_SYSTEM.LNGLAT : COORDINATE_SYSTEM.CARTESIAN;
 
     return new SubLayerClass(props, {
       data: DUMMY_DATA,

@@ -21,6 +21,17 @@ const MERCATOR_REFERENCE_VIEWPORT = new WebMercatorViewport({
   zoom: 0
 });
 
+/** Project lng/lat to absolute Mercator common space. */
+export function lngLatToMercatorCommon(lngLat: number[]): [number, number] {
+  const [x, y] = MERCATOR_REFERENCE_VIEWPORT.projectPosition(lngLat);
+  return [x, y];
+}
+
+/** Returns a Mercator viewport for bounds computation, bypassing GlobeView. */
+export function getMercatorReferenceViewport(viewport: Viewport): Viewport {
+  return viewport.isGeospatial ? MERCATOR_REFERENCE_VIEWPORT : viewport;
+}
+
 /*
  * Compute the union of bounds from multiple layers
  * Returns bounds in CARTESIAN coordinates
