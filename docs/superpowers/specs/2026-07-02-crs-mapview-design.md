@@ -84,12 +84,16 @@ new MapView({
       inverse: (xy: [number, number]) => [lng, lat],
     },
     extent: [minX, minY, maxX, maxY],       // CRS-unit bounds; defines world scale
-    units: 'meters',
+    units: 'meters',                        // CRS axis unit; relates elevation (meters) and
+                                            // distanceScales to CRS units
   },
 })
 ```
 
-- `crs` unset or `'EPSG:3857'` → today's `WebMercatorViewport`; zero behavior change.
+- `crs` accepts a `CRSDefinition` object as above, or a string for built-ins: unset or
+  `'EPSG:3857'` → today's `WebMercatorViewport` (zero behavior change); `'EPSG:4326'` → the
+  built-in trivial transform. Any other string throws (no registry lookup — transforms are
+  injected).
 - **No proj dependency in core.** The transform is injected. Fathom wires its existing
   `projection-utils.ts` (proj-wasm/proj4 selection); upstream docs show a proj4js recipe.
   `'EPSG:4326'` ships built-in as a trivial transform.
