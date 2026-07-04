@@ -181,10 +181,11 @@ This RFC covers Phase 1 (core CRS support in `@deck.gl/core`: `CRSTransform`, `C
 `MapView.crs` prop, and `PROJECTION_MODE.CRS`) only. Two further phases are anticipated as
 separate specs/PRs:
 
-* **Phase 2 — CRS-aware tiles in `@deck.gl/geo-layers`.** Pluggable `Tileset2D` indexing driven
-  by OGC TileMatrixSet definitions, with `TileLayer`/`WMSLayer` gaining a `tileMatrixSet`/`crs`
-  prop. Enables TiTiler-style basemaps in UTM and `WorldCRS84Quad` tile services — the remaining
-  half of the #6216 ask not covered by Phase 1's rendering support alone.
+* **Phase 2 — CRS-aware tiles in `@deck.gl/geo-layers`** (implemented on this branch):
+  `_CRSTileset2D` indexes tiles from OGC TileMatrixSet definitions; `TileLayer` gains a
+  `tileMatrixSet` prop. Enables TiTiler-style basemaps in UTM and `WorldCRS84Quad` tile
+  services — the remaining half of the #6216 ask not covered by Phase 1's rendering support
+  alone. `_WMSLayer`/`MVTLayer` support is future work.
 * **Phase 3 — GPU warping of Web-Mercator sources.** Per-tile gridded meshes, with vertices
   transformed Mercator → target CRS on CPU and the tile texture-mapped on GPU (OpenLayers-style
   triangulated reprojection). Lets existing Web Mercator basemaps (OSM, Esri, etc.) render in any

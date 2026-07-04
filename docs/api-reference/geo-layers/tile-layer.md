@@ -234,6 +234,60 @@ getTileData: ({url, signal}) => {
 
 Tileset class that `TileLayer` uses for tile indexing. Extend [Tileset2D](#tileset2d) to implement a custom indexing scheme.
 
+#### `tileMatrixSet` (TileMatrixSet, optional) {#tilematrixset}
+
+- Default: `null`
+
+An OGC TileMatrixSet definition describing the tile grid, for use when rendering into a
+`MapView` with a non-Mercator [`crs`](../core/map-view.md#crs). When set, tiles are indexed by
+the experimental `_CRSTileset2D` instead of the Web Mercator (OSM) tile pyramid: the tile
+matrix level is chosen by matching each level's `cellSize` (CRS units per pixel) against the
+viewport resolution, and tile indices are computed in CRS coordinates.
+
+```js
+import {TileLayer} from '@deck.gl/geo-layers';
+import {BitmapLayer} from '@deck.gl/layers';
+import {MapView} from '@deck.gl/core';
+
+// NASA GIBS EPSG:4326, 512px tiles: level z covers the world in 2^(z+1) x 2^z tiles
+const GIBS_4326 = {
+  crs: 'EPSG:4326',
+  tileMatrices: Array.from({length: 9}, (_, z) => ({
+    id: String(z),
+    cellSize: 0.3515625 / 2 ** z,
+    pointOfOrigin: [-180, 90],
+    tileWidth: 512,
+    tileHeight: 512,
+    matrixWidth: 2 ** (z + 1),
+    matrixHeight: 2 ** z
+  }))
+};
+
+const layer = new TileLayer({
+  data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/default/EPSG4326_500m/{z}/{y}/{x}.jpeg',
+  tileMatrixSet: GIBS_4326,
+  maxZoom: 8,
+  renderSubLayers: props => {
+    const {west, south, east, north} = props.tile.bbox;
+    return new BitmapLayer(props, {
+      data: null,
+      image: props.data,
+      bounds: [west, south, east, north]
+    });
+  }
+});
+
+// rendered with: new MapView({crs: 'EPSG:4326'})
+```
+
+Each tile matrix is `{id, cellSize (or scaleDenominator), pointOfOrigin, cornerOfOrigin?,
+tileWidth, tileHeight, matrixWidth, matrixHeight}` — a subset of OGC TileMatrixSet 2.0. Levels
+must be ordered coarse to fine. In URL templates, `{z}` substitutes the level's array position
+and `{tm}` the tile matrix `id` string. Tiles additionally expose `boundsCRS` (the exact tile
+rect in CRS units) and `boundsCommon` (the same rect in deck's common space, for exact
+positioning of raster sublayers with `COORDINATE_SYSTEM.CARTESIAN`). The TMS must be defined in
+the same CRS as the view. Define the object once outside the render loop.
+
 #### `tileSize` (number, optional) {#tilesize}
 
 The pixel dimension of the tiles, usually a power of 2.
