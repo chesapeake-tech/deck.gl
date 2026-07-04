@@ -69,10 +69,14 @@ than `'EPSG:3857'`, and `WebMercatorViewport` otherwise. `CRSViewport`:
 
 * Defines common space as the CRS plane, offset by `extent`'s minimum corner and scaled so that
   `extent`'s width maps to deck.gl's 512-unit world at zoom `0` — the same convention
-  `WebMercatorViewport` uses, so zoom levels stay meaningful across CRSs.
+  `WebMercatorViewport` uses. Because zoom is defined relative to each CRS's own extent rather
+  than to an absolute ground unit, it is **extent-relative**, not universally
+  ground-comparable across CRSs — see [Design decision: extent-relative
+  zoom](#design-decision-extent-relative-zoom) below.
 * Keeps `{longitude, latitude, zoom, bearing, pitch}` view state geographic, so `MapController`,
-  transitions, and view-state persistence work unchanged, and switching `crs` is a one-prop
-  change. The internal projected center is `transform.forward([longitude, latitude])`.
+  transitions, and view-state persistence work unchanged, and switching `crs` requires changing
+  only that one prop (though zoom's ground meaning shifts with the new CRS's extent size — see
+  below). The internal projected center is `transform.forward([longitude, latitude])`.
 * Implements `projectFlat`/`unprojectFlat` (and therefore `project`, `unproject`, `panByPosition`,
   `fitBounds`, picking, and tooltips) via the injected transform directly — these CPU paths are
   exact, with no linearization error.
@@ -82,6 +86,47 @@ than `'EPSG:3857'`, and `WebMercatorViewport` otherwise. `CRSViewport`:
   the edge of its zone).
 * Has no `repeat` option: a projected CRS is a finite plane, not a wrapping globe, so there is no
   analog of Mercator's low-zoom world repetition.
+
+### Design decision: extent-relative zoom
+
+**Decision:** zoom is defined relative to each CRS's own `extent`, not normalized against Web
+Mercator's ground scale. At zoom `z`, `extent`'s width spans deck.gl's `512 * 2^z`-pixel
+common-space world, for every CRS. This makes zoom **extent-relative**: `'EPSG:4326'`'s
+360°×180° extent is angularly comparable to Mercator's whole-world extent, so its zoom levels
+are roughly ground-comparable to Web Mercator's, but a projected CRS with a much smaller extent
+(a single UTM zone spans a few hundred kilometers, not the globe) reaches the same zoom number
+at a much more zoomed-in ground scale. Applications that need to preserve ground scale across a
+CRS switch convert zoom explicitly:
+
+```js
+const newZoom =
+  zoom + Math.log2(sourceViewport.distanceScales.unitsPerMeter[0] / targetViewport.distanceScales.unitsPerMeter[0]);
+```
+
+and should set their own `MapController` `minZoom`/`maxZoom` — the defaults (`0`/`20`) are
+calibrated for Web Mercator's extent.
+
+**Rationale:**
+
+* This mirrors the convention `WebMercatorViewport` already uses: Mercator's own "extent" is the
+  world square, and its zoom is relative to that square, not to any absolute ground unit.
+  Extending the same rule to arbitrary CRSs keeps one mental model instead of a special case for
+  Mercator and a different one for everything else.
+* It makes deck's zoom align 1:1 with OGC TileMatrixSet levels for a projected CRS — a
+  TileMatrixSet's tile matrix at level `z` tiles exactly the CRS's defined extent into `2^z`
+  tiles per side, the same relationship deck's `512 * 2^z` convention encodes. This alignment
+  matters for the planned Phase 2 tile support (see Future work): a `TileLayer` driven by a
+  `tileMatrixSet` can map deck's `zoom` directly onto tile-matrix levels without a translation
+  layer.
+
+**Alternative considered and rejected:** a Mercator-normalized world scale, where every CRS's
+common space is scaled to match Web Mercator's ground-distance-per-zoom-level regardless of the
+CRS's own extent. This would keep zoom ground-comparable across CRSs out of the box, but it
+requires picking an arbitrary reference latitude to define "Mercator's ground distance" for the
+normalization (Mercator's own ground scale varies with latitude), and it would force a per-CRS
+zoom offset through all tile indexing in Phase 2 — every `TileMatrixSet` lookup would need to
+un-normalize deck's zoom back to the tile matrix's own levels via that same arbitrary constant.
+Extent-relative zoom avoids inventing this constant and keeps the tile-indexing math direct.
 
 ### `PROJECTION_MODE.CRS` and shader-side linearization
 
