@@ -45,3 +45,5 @@ export type {Tileset2DProps as _Tileset2DProps} from './tileset-2d/index';
 export {getURLFromTemplate as _getURLFromTemplate} from './tileset-2d/index';
 export {Tileset2D as _Tileset2D} from './tileset-2d/index';
 export {Tile2DHeader as _Tile2DHeader} from './tileset-2d/index';
+export {CRSTileset2D as _CRSTileset2D} from './tileset-2d/index';
+export type {TileMatrixSet, TileMatrix} from './tileset-2d/index';
