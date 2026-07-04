@@ -42,7 +42,8 @@ export default {
     cameraPosition: 'vec3<f32>',
     coordinateOrigin: 'vec3<f32>',
     commonOrigin: 'vec3<f32>',
-    pseudoMeters: 'f32'
+    pseudoMeters: 'f32',
+    crsUnitsPerDegree: 'vec4<f32>'
   }
   // @ts-ignore TODO v9.1
 } as const satisfies ShaderModule<ProjectProps, ProjectUniforms, {}>;
