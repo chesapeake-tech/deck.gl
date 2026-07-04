@@ -173,7 +173,7 @@ Returns:
 
 ### Known not to work yet (Phase 2/3 scope)
 
-* **`TileLayer`** — tile indexing is Web-Mercator-only; there is no CRS-aware `Tileset2D`/`tileMatrixSet` support yet.
+* **`TileLayer`** supports CRS views via the [`tileMatrixSet` prop](../geo-layers/tile-layer.md#tilematrixset) (OGC TileMatrixSet indexing). Without it, `TileLayer` still assumes the Web Mercator tile pyramid. `MVTLayer` and `_WMSLayer` are not yet CRS-aware.
 * **`TerrainExtension`** — its anchor math assumes a Mercator viewport.
 
 ## Source

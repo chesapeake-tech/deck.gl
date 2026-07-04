@@ -17,8 +17,9 @@ import {
 import {GeoJsonLayer} from '@deck.gl/layers';
 import {LayersList} from '@deck.gl/core';
 
-import type {TileLoadProps, ZRange} from '../tileset-2d/index';
+import type {TileLoadProps, TileMatrixSet, ZRange} from '../tileset-2d/index';
 import {
+  CRSTileset2D,
   Tileset2D,
   Tile2DHeader,
   RefinementStrategy,
@@ -48,6 +49,7 @@ const defaultProps: DefaultProps<TileLayerProps> = {
   maxCacheByteSize: null,
   refinementStrategy: STRATEGY_DEFAULT,
   zRange: null,
+  tileMatrixSet: {type: 'object', optional: true, value: null, compare: 2},
   maxRequests: 6,
   debounceTime: 0,
   zoomOffset: 0,
@@ -65,6 +67,14 @@ type _TileLayerProps<DataT> = {
    * Optionally implement a custom indexing scheme.
    */
   TilesetClass?: typeof Tileset2D;
+  /**
+   * OGC TileMatrixSet describing the tile grid when rendering into a `MapView` with a
+   * non-Mercator `crs`. When set (and `TilesetClass` is not customized), tiles are indexed
+   * with `_CRSTileset2D`. Define the object once outside the render loop — a new object
+   * identity recreates the tileset.
+   * @default null
+   */
+  tileMatrixSet?: TileMatrixSet | null;
   /**
    * Renders one or an array of Layer instances.
    */
@@ -226,7 +236,7 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
     return changeFlags.somethingChanged;
   }
 
-  updateState({changeFlags}: UpdateParameters<this>) {
+  updateState({props, oldProps, changeFlags}: UpdateParameters<this>) {
     let {tileset} = this.state;
     const propsChanged = changeFlags.propsOrDataChanged || changeFlags.updateTriggersChanged;
     const dataChanged =
@@ -234,8 +244,12 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
       (changeFlags.updateTriggersChanged &&
         (changeFlags.updateTriggersChanged.all || changeFlags.updateTriggersChanged.getTileData));
 
+    if (tileset && props.tileMatrixSet !== oldProps.tileMatrixSet) {
+      tileset.finalize();
+      tileset = null;
+    }
     if (!tileset) {
-      tileset = new this.props.TilesetClass(this._getTilesetOptions());
+      tileset = new (this._getTilesetClass())(this._getTilesetOptions());
       this.setState({tileset});
     } else if (propsChanged) {
       tileset.setOptions(this._getTilesetOptions());
@@ -255,7 +269,15 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
     this._updateTileset();
   }
 
-  _getTilesetOptions(): Tileset2DProps {
+  _getTilesetClass(): typeof Tileset2D {
+    const {TilesetClass, tileMatrixSet} = this.props;
+    if (tileMatrixSet && TilesetClass === Tileset2D) {
+      return CRSTileset2D;
+    }
+    return TilesetClass;
+  }
+
+  _getTilesetOptions(): Tileset2DProps & {tileMatrixSet?: TileMatrixSet | null} {
     const {
       tileSize,
       maxCacheSize,
@@ -268,7 +290,8 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
       debounceTime,
       zoomOffset,
       visibleMinZoom,
-      visibleMaxZoom
+      visibleMaxZoom,
+      tileMatrixSet
     } = this.props;
 
     return {
@@ -284,6 +307,7 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
       zoomOffset,
       visibleMinZoom,
       visibleMaxZoom,
+      tileMatrixSet,
 
       getTileData: this.getTileData.bind(this),
       onTileLoad: this._onTileLoad.bind(this),
