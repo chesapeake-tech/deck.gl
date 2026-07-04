@@ -4,7 +4,7 @@
 
 import {test, expect} from 'vitest';
 import {MapView, WebMercatorViewport, _CRSViewport as CRSViewport} from '@deck.gl/core';
-import {UTM18N} from '../viewports/crs-utils.node.spec';
+import {UTM18N} from '../viewports/crs-fixtures';
 
 const VIEW_STATE = {longitude: -72, latitude: 40, zoom: 10};
 
