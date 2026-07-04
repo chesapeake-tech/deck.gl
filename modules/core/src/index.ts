@@ -40,6 +40,7 @@ export {default as DeckRenderer} from './lib/deck-renderer';
 export {default as Viewport} from './viewports/viewport';
 export {default as WebMercatorViewport} from './viewports/web-mercator-viewport';
 export {default as _GlobeViewport} from './viewports/globe-viewport';
+export {default as _CRSViewport} from './viewports/crs-viewport';
 export {default as OrbitViewport} from './viewports/orbit-viewport';
 export {default as OrthographicViewport} from './viewports/orthographic-viewport';
 export {default as FirstPersonViewport} from './viewports/first-person-viewport';
@@ -100,6 +101,8 @@ export {getMaxBoundsRect as _getMaxBoundsRect} from './controllers/utils';
 // Types
 export type {CoordinateSystem} from './lib/constants';
 export type {MapViewState, MapViewProps} from './views/map-view';
+export type {CRSDefinition, CRSTransform} from './viewports/crs-utils';
+export type {CRSViewportOptions} from './viewports/crs-viewport';
 export type {FirstPersonViewState, FirstPersonViewProps} from './views/first-person-view';
 export type {OrbitViewState, OrbitViewProps} from './views/orbit-view';
 export type {OrthographicViewState, OrthographicViewProps} from './views/orthographic-view';
