@@ -40,6 +40,9 @@ function makeGraticule() {
   return paths;
 }
 
+// Zoom is extent-relative (see docs/api-reference/core/crs-viewport.md#zoom-is-extent-relative):
+// this same zoom looks much more zoomed-in under the UTM 18N CRS than under Mercator/EPSG:4326,
+// since UTM 18N's extent is a single zone rather than the whole globe.
 const INITIAL_VIEW_STATE = {longitude: -72, latitude: 40, zoom: 7, pitch: 0, bearing: 0};
 
 const CONTROLS_STYLE = {

@@ -6,7 +6,7 @@ The `CRSViewport` class takes map view states (`latitude`, `longitude`, `zoom`, 
 
 The `CRSViewport` is created under the hood by a [MapView](./map-view.md) whenever its [`crs`](./map-view.md#crs) prop is set to anything other than `'EPSG:3857'`.
 
-Common space is the CRS plane: the CRS's own units, offset so that the extent minimum sits at the origin, and scaled so the extent width maps to a 512-unit world at zoom `0` — the same convention `WebMercatorViewport` uses for Web Mercator meters, so zoom levels behave consistently across CRSs.
+Common space is the CRS plane: the CRS's own units, offset so that the extent minimum sits at the origin, and scaled so the extent width maps to a 512-unit world at zoom `0` — the same convention `WebMercatorViewport` uses for Web Mercator meters. Because zoom is defined relative to each CRS's own extent, it is **extent-relative** rather than universally ground-comparable — see [Zoom is extent-relative](#zoom-is-extent-relative) below.
 
 ```js
 import proj4 from 'proj4';
@@ -82,9 +82,25 @@ Remarks:
 
 * `crs` and its `extent` are validated on construction: the extent must be `[minX, minY, maxX, maxY]` with positive width and height, and the transform must round-trip at the extent center. An invalid extent or a non-finite round-trip throws.
 * The view center is clamped into the CRS `extent` on construction, since an out-of-domain center can produce non-finite results from the transform (for example, panning past the edge of a UTM zone).
-* `latitude`/`longitude` remain in WGS84 degrees regardless of `crs`, so `{longitude, latitude, zoom, bearing, pitch}` view state is portable across CRSs — switching `crs` on a `MapView` is a one-prop change.
+* `latitude`/`longitude` remain in WGS84 degrees regardless of `crs`, so `{longitude, latitude, zoom, bearing, pitch}` view state is portable across CRSs — switching `crs` on a `MapView` only requires changing that one prop. Zoom's *ground* meaning does not carry over unchanged, though: it is extent-relative, so the same `zoom` number can represent a very different ground scale after the switch. See [Zoom is extent-relative](#zoom-is-extent-relative) below for the scale-preserving conversion.
 
 Inherits all [Viewport methods](./viewport.md#methods).
+
+## Zoom is extent-relative
+
+At zoom level `z`, the CRS's `extent` always spans `512 * 2^z` pixels in common space — that's the common-space convention above, applied literally. What that means on the ground depends on how big the extent is:
+
+* `'EPSG:4326'`'s extent is the full 360°×180° lat/lng box, which is angularly comparable to Web Mercator's whole-world extent, so the same zoom number is roughly ground-comparable between the two.
+* A projected CRS with a much smaller extent — a single UTM zone spans a few hundred kilometers, not the whole globe — reaches the same zoom number at a much more zoomed-in ground scale. Zoom `10` in a UTM viewport is not the same ground scale as zoom `10` in Web Mercator or `'EPSG:4326'`.
+
+To switch between viewports (or CRSs) while preserving ground scale, adjust zoom by the ratio of `distanceScales.unitsPerMeter`:
+
+```js
+const newZoom =
+  zoom + Math.log2(sourceViewport.distanceScales.unitsPerMeter[0] / targetViewport.distanceScales.unitsPerMeter[0]);
+```
+
+`MapController`'s default `minZoom: 0, maxZoom: 20` are calibrated for Web Mercator's world-sized extent. Applications using a projected CRS with a smaller extent should set their own `minZoom`/`maxZoom` to match the extent's actual scale.
 
 ## Methods
 
@@ -147,9 +163,17 @@ Returns:
 
 * **No repeated worlds.** `CRSViewport` has no `repeat` option: a projected CRS is a finite plane, not a wrapping globe, so there is no analog of `WebMercatorViewport`'s low-zoom world repetition.
 * **`COORDINATE_SYSTEM.CARTESIAN` positions must be pre-normalized to common space.** Unlike `COORDINATE_SYSTEM.LNGLAT`, Cartesian data is not run through the CRS transform or its linear approximation — it is assumed to already be in the viewport's common-space units.
-* **`COORDINATE_SYSTEM.METER_OFFSETS` uses diagonal (isotropic) scales.** Distance scales are derived from the magnitude of the Jacobian at the reference point, not its full 2×2 form, so meter offsets do not account for grid convergence (the local rotation between the CRS grid and true north).
+* **`COORDINATE_SYSTEM.METER_OFFSETS` and `COORDINATE_SYSTEM.LNGLAT_OFFSETS` use diagonal (isotropic) scales.** Distance scales are derived from the magnitude of the Jacobian at the reference point, not its full 2×2 form, so both offset systems scale by the Jacobian column magnitudes without accounting for grid convergence (the local rotation between the CRS grid and true north).
+* **Second-order distance-scale corrections are zero in CRS mode.** `unitsPerDegree2`/`unitsPerMeter2` (the corrections `WebMercatorViewport` uses to account for Mercator's latitude-dependent scale change) are zero for `PROJECTION_MODE.CRS`, so tall `METER_OFFSETS` geometries lose the y-axis correction Mercator applies.
 * **Data outside the CRS domain renders at linearized positions.** The shader-side affine approximation has no domain check; layer data whose `COORDINATE_SYSTEM.LNGLAT` positions fall outside the CRS's valid extent is rendered wherever the linear approximation places it, rather than erroring.
 * **The view center is clamped into the CRS extent.** Panning the view center out of the CRS's valid domain clamps it back inside, so that the projected center never receives a non-finite result from the transform.
+* **`maxBounds` is not supported with a non-Mercator `crs`.** `MapController` converts `maxBounds` via Web Mercator world coordinates, so with a CRS view it produces an incorrect constraint region rather than the intended geographic bounds.
+* **`FlyToInterpolator` interpolates in Mercator world coordinates.** With a CRS view, the transition's destination view state is still correct, but the pacing of the transition (how the camera eases toward it) may be slightly off since the interpolation path itself is computed in Mercator space.
+
+### Known not to work yet (Phase 2/3 scope)
+
+* **`TileLayer`** — tile indexing is Web-Mercator-only; there is no CRS-aware `Tileset2D`/`tileMatrixSet` support yet.
+* **`TerrainExtension`** — its anchor math assumes a Mercator viewport.
 
 ## Source
 
