@@ -33,7 +33,7 @@ Pure functions and types: CRS normalization, lng/lat ↔ common-space transforms
 
 **Files:**
 - Create: `modules/core/src/viewports/crs-utils.ts`
-- Test: `test/modules/core/viewports/crs-utils.spec.ts`
+- Test: `test/modules/core/viewports/crs-utils.node.spec.ts`
 
 **Interfaces:**
 - Consumes: nothing (pure module).
@@ -51,7 +51,7 @@ Pure functions and types: CRS normalization, lng/lat ↔ common-space transforms
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/modules/core/viewports/crs-utils.spec.ts`:
+Create `test/modules/core/viewports/crs-utils.node.spec.ts`:
 
 ```ts
 // deck.gl
@@ -232,7 +232,7 @@ Note the `@deck.gl/core/viewports/crs-utils` deep import: check how other specs 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run --project node test/modules/core/viewports/crs-utils.spec.ts`
+Run: `npx vitest run --project node test/modules/core/viewports/crs-utils.node.spec.ts`
 Expected: FAIL — cannot resolve `crs-utils` (module does not exist).
 
 - [ ] **Step 3: Write the implementation**
@@ -426,13 +426,13 @@ export function getCRSDistanceScales(crs: NormalizedCRS, lnglat: number[]) {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run --project node test/modules/core/viewports/crs-utils.spec.ts`
+Run: `npx vitest run --project node test/modules/core/viewports/crs-utils.node.spec.ts`
 Expected: PASS (8 tests). If the deep import fails to resolve, switch to relative imports as noted in Step 1.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add modules/core/src/viewports/crs-utils.ts test/modules/core/viewports/crs-utils.spec.ts
+git add modules/core/src/viewports/crs-utils.ts test/modules/core/viewports/crs-utils.node.spec.ts
 git commit -m "feat(core): add CRS transform utilities for non-mercator projections"
 ```
 
@@ -444,7 +444,7 @@ git commit -m "feat(core): add CRS transform utilities for non-mercator projecti
 - Modify: `modules/core/src/lib/constants.ts:68-87` (add `CRS` projection mode)
 - Modify: `modules/core/src/viewports/viewport.ts:421,456` (make `_initProps` / `_initMatrices` `protected`)
 - Create: `modules/core/src/viewports/crs-viewport.ts`
-- Test: `test/modules/core/viewports/crs-viewport.spec.ts`
+- Test: `test/modules/core/viewports/crs-viewport.node.spec.ts`
 
 **Interfaces:**
 - Consumes: everything from Task 1 (`normalizeCRS`, `lngLatToCommon`, `commonToLngLat`, `getCRSJacobian`, `getCRSDistanceScales`, types).
@@ -455,7 +455,7 @@ git commit -m "feat(core): add CRS transform utilities for non-mercator projecti
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/modules/core/viewports/crs-viewport.spec.ts`. Re-use the UTM fixture by exporting `UTM18N` from the Task 1 spec (already exported there):
+Create `test/modules/core/viewports/crs-viewport.node.spec.ts`. Re-use the UTM fixture by exporting `UTM18N` from the Task 1 spec (already exported there):
 
 ```ts
 // deck.gl
@@ -465,7 +465,7 @@ Create `test/modules/core/viewports/crs-viewport.spec.ts`. Re-use the UTM fixtur
 import {test, expect} from 'vitest';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
-import {UTM18N} from './crs-utils.spec';
+import {UTM18N} from './crs-utils.node.spec';
 
 const BASE_PROPS = {width: 800, height: 600, crs: UTM18N};
 
@@ -569,7 +569,7 @@ test('CRSViewport#equals', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run --project node test/modules/core/viewports/crs-viewport.spec.ts`
+Run: `npx vitest run --project node test/modules/core/viewports/crs-viewport.node.spec.ts`
 Expected: FAIL — `crs-viewport` module not found.
 
 - [ ] **Step 3: Add the projection mode constant**
@@ -855,7 +855,7 @@ export default class CRSViewport extends Viewport {
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `npx vitest run --project node test/modules/core/viewports/crs-viewport.spec.ts test/modules/core/viewports/crs-utils.spec.ts`
+Run: `npx vitest run --project node test/modules/core/viewports/crs-viewport.node.spec.ts test/modules/core/viewports/crs-utils.node.spec.ts`
 Expected: PASS. Common failure modes if not:
 - Center test off → the `_initProps`/`_initMatrices` re-run isn't using `viewportOpts` (it must, so `distanceScales` and `viewMatrix` are the computed ones, not raw `opts`).
 - `Object.freeze` error → re-init must happen before freeze.
@@ -868,7 +868,7 @@ Expected: PASS — all existing viewport specs (conformance, web-mercator, globe
 - [ ] **Step 8: Commit**
 
 ```bash
-git add modules/core/src/lib/constants.ts modules/core/src/viewports/viewport.ts modules/core/src/viewports/crs-viewport.ts test/modules/core/viewports/crs-viewport.spec.ts
+git add modules/core/src/lib/constants.ts modules/core/src/viewports/viewport.ts modules/core/src/viewports/crs-viewport.ts test/modules/core/viewports/crs-viewport.node.spec.ts
 git commit -m "feat(core): add CRSViewport and PROJECTION_MODE.CRS"
 ```
 
@@ -881,7 +881,7 @@ git commit -m "feat(core): add CRSViewport and PROJECTION_MODE.CRS"
 - Modify: `modules/core/src/shaderlib/project/project.ts:28-46` (uniformTypes)
 - Modify: `modules/core/src/shaderlib/project/project.glsl.ts` (UBO ~line 32; project_position ~line 188)
 - Modify: `modules/core/src/shaderlib/project/project.wgsl.ts` (struct ~line 42; project_position_vec4_f64 ~line 209)
-- Test: `test/modules/core/shaderlib/project/crs-project.spec.ts`
+- Test: `test/modules/core/shaderlib/project/crs-project.node.spec.ts`
 
 **Interfaces:**
 - Consumes: `PROJECTION_MODE.CRS`, `CRSViewport` with `getCRSJacobianAtOrigin(origin)` (Task 2).
@@ -889,7 +889,7 @@ git commit -m "feat(core): add CRSViewport and PROJECTION_MODE.CRS"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/modules/core/shaderlib/project/crs-project.spec.ts`:
+Create `test/modules/core/shaderlib/project/crs-project.node.spec.ts`:
 
 ```ts
 // deck.gl
@@ -901,7 +901,7 @@ import {WebMercatorViewport} from '@deck.gl/core';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
 import {getUniformsFromViewport} from '@deck.gl/core/shaderlib/project/viewport-uniforms';
-import {UTM18N} from '../../viewports/crs-utils.spec';
+import {UTM18N} from '../../viewports/crs-utils.node.spec';
 
 function makeViewport(props = {}) {
   return new CRSViewport({
@@ -1003,7 +1003,7 @@ test('CRS shader linearization#EPSG:4326 is exact', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run --project node test/modules/core/shaderlib/project/crs-project.spec.ts`
+Run: `npx vitest run --project node test/modules/core/shaderlib/project/crs-project.node.spec.ts`
 Expected: FAIL — `projectionMode` handled as "unknown" (`offsetMode = false` default in `getOffsetOrigin`), `crsUnitsPerDegree` undefined.
 
 - [ ] **Step 3: Add the getOffsetOrigin case and the jacobian uniform**
@@ -1149,7 +1149,7 @@ In `modules/core/src/shaderlib/project/project.wgsl.ts`:
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `npx vitest run --project node test/modules/core/shaderlib/project/crs-project.spec.ts test/modules/core/shaderlib`
+Run: `npx vitest run --project node test/modules/core/shaderlib/project/crs-project.node.spec.ts test/modules/core/shaderlib`
 Expected: PASS, including the pre-existing `viewport-uniforms.spec.ts` and `project-glsl.spec.ts` (regression: the new UBO field must not break the GLSL-compiled tests; if `project-glsl.spec` fails on uniform block mismatch, re-check that GLSL field order exactly matches `uniformTypes` order).
 
 - [ ] **Step 8: Headless GPU regression**
@@ -1160,7 +1160,7 @@ Expected: PASS — the shader edits compile and existing projection modes render
 - [ ] **Step 9: Commit**
 
 ```bash
-git add modules/core/src/shaderlib/project test/modules/core/shaderlib/project/crs-project.spec.ts
+git add modules/core/src/shaderlib/project test/modules/core/shaderlib/project/crs-project.node.spec.ts
 git commit -m "feat(core): add PROJECTION_MODE.CRS shader branch with 2x2 jacobian uniform"
 ```
 
@@ -1171,7 +1171,7 @@ git commit -m "feat(core): add PROJECTION_MODE.CRS shader branch with 2x2 jacobi
 **Files:**
 - Modify: `modules/core/src/views/map-view.ts`
 - Modify: `modules/core/src/index.ts:41-42,101`
-- Test: `test/modules/core/views/map-view-crs.spec.ts`
+- Test: `test/modules/core/views/map-view-crs.node.spec.ts`
 
 **Interfaces:**
 - Consumes: `CRSViewport`, `CRSViewportOptions` (Task 2), `CRSDefinition` (Task 1).
@@ -1181,7 +1181,7 @@ git commit -m "feat(core): add PROJECTION_MODE.CRS shader branch with 2x2 jacobi
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/modules/core/views/map-view-crs.spec.ts`:
+Create `test/modules/core/views/map-view-crs.node.spec.ts`:
 
 ```ts
 // deck.gl
@@ -1190,7 +1190,7 @@ Create `test/modules/core/views/map-view-crs.spec.ts`:
 
 import {test, expect} from 'vitest';
 import {MapView, WebMercatorViewport, _CRSViewport as CRSViewport} from '@deck.gl/core';
-import {UTM18N} from '../viewports/crs-utils.spec';
+import {UTM18N} from '../viewports/crs-utils.node.spec';
 
 const VIEW_STATE = {longitude: -72, latitude: 40, zoom: 10};
 
@@ -1225,7 +1225,7 @@ test('MapView#crs EPSG:4326 makes CRSViewport', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run --project node test/modules/core/views/map-view-crs.spec.ts`
+Run: `npx vitest run --project node test/modules/core/views/map-view-crs.node.spec.ts`
 Expected: FAIL — `_CRSViewport` not exported; `crs` prop not typed/handled.
 
 - [ ] **Step 3: Implement the MapView prop**
@@ -1281,7 +1281,7 @@ export type {CRSViewportOptions} from './viewports/crs-viewport';
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `npx vitest run --project node test/modules/core/views/map-view-crs.spec.ts test/modules/core/views`
+Run: `npx vitest run --project node test/modules/core/views/map-view-crs.node.spec.ts test/modules/core/views`
 Expected: PASS, including pre-existing view specs.
 
 - [ ] **Step 6: Full fast suite**
@@ -1292,7 +1292,7 @@ Expected: PASS (lint + node tests). Fix any lint complaints (unused imports, etc
 - [ ] **Step 7: Commit**
 
 ```bash
-git add modules/core/src/views/map-view.ts modules/core/src/index.ts test/modules/core/views/map-view-crs.spec.ts
+git add modules/core/src/views/map-view.ts modules/core/src/index.ts test/modules/core/views/map-view-crs.node.spec.ts
 git commit -m "feat(core): add crs prop to MapView"
 ```
 
