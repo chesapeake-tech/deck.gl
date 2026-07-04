@@ -99,7 +99,13 @@ function App() {
       <DeckGL
         views={new MapView({crs: CRS_OPTIONS[crsName]})}
         initialViewState={INITIAL_VIEW_STATE}
-        controller={true}
+        // KNOWN ISSUE: MapController's `normalize`/`maxBounds` constraints
+        // (map-controller.ts applyConstraints/_constrainZoom) use Web Mercator
+        // world math regardless of the view's CRS. On a regional CRS, zooming out
+        // past zoom = log2(height/512) freezes zoom and snaps latitude to 0,
+        // sending the data off-screen. Disable normalization for non-Mercator
+        // CRSs until the controller delegates constraint math to the viewport.
+        controller={{normalize: crsName === 'Web Mercator'}}
         layers={layers}
         getTooltip={({coordinate}) =>
           coordinate && `${coordinate[0].toFixed(5)}, ${coordinate[1].toFixed(5)}`
