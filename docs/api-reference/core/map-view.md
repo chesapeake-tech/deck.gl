@@ -52,6 +52,43 @@ Distance of the camera relative to viewport height. Default `1.5`.
 
 Whether to create an orthographic or perspective projection matrix. Default is `false` (perspective projection).
 
+#### `crs` (CRSDefinition | string, optional) {#crs}
+
+Render the map in a coordinate reference system other than Web Mercator. Accepts:
+
+- `'EPSG:3857'` (default): Web Mercator, the standard behavior.
+- `'EPSG:4326'`: equirectangular (plate carrée) projection, built in.
+- A `CRSDefinition` object for any other projected CRS. deck.gl does not bundle a
+  projection library; supply the transform from proj4js or similar:
+
+```js
+import proj4 from 'proj4';
+import {MapView} from '@deck.gl/core';
+
+const converter = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
+
+const view = new MapView({
+  crs: {
+    code: 'EPSG:32618',
+    transform: {
+      forward: lnglat => converter.forward(lnglat),
+      inverse: xy => converter.inverse(xy)
+    },
+    extent: [166021.44, 0, 833978.56, 9329005.18],
+    units: 'meters'
+  }
+});
+```
+
+The view state remains `{longitude, latitude, zoom, bearing, pitch}` regardless of CRS,
+so switching CRS is a one-prop change. Layer data in `COORDINATE_SYSTEM.LNGLAT` renders
+via a local affine approximation around the view center: exact for EPSG:4326, sub-pixel
+at city/survey scales for projected CRSs, degrading only for continental extents in
+strongly curved projections. Longitude wrapping (`repeat`) is not supported with a
+non-Mercator `crs`.
+
+See [CRSViewport](./crs-viewport.md) for the viewport implementation and its limitations.
+
 
 ## View State
 
