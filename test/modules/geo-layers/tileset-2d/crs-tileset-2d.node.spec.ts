@@ -9,7 +9,7 @@ import {
   _getURLFromTemplate as getURLFromTemplate
 } from '@deck.gl/geo-layers';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
-import {makeWorldCRS84Quad512, makeUTM18NTms} from './tms-fixtures';
+import {makeWorldCRS84Quad512, makeUTM18NTms, GIBS_500M_TMS} from './tms-fixtures';
 
 const getTileData = () => Promise.resolve(null);
 
@@ -131,4 +131,126 @@ test('CRSTileset2D#url template with {tm}', () => {
     id: '3-1-2'
   });
   expect(url).toBe('https://example.com/2/3/1.png');
+});
+
+test('CRSTileset2D#real GIBS grid: overflow clamping, root parent, bbox domain clamp', () => {
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: GIBS_500M_TMS});
+  // zoom log2(0.703125/0.5625): crsUnitsPerPixel === GIBS level-0 cellSize exactly
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 1024,
+    height: 512,
+    longitude: 0,
+    latitude: 0,
+    zoom: Math.log2(0.703125 / 0.5625)
+  });
+  tileset.update(viewport);
+  const tiles = tileset.selectedTiles!;
+  expect(tiles.map(t => t.index)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({x: 0, y: 0, z: 0, tm: '0'}),
+      expect.objectContaining({x: 1, y: 0, z: 0, tm: '0'})
+    ])
+  );
+  expect(tiles).toHaveLength(2);
+  const tile = tiles.find(t => (t.index as any).x === 0)!;
+  // exact grid rect overflows the CRS extent (row past the south pole)...
+  const boundsCRS = (tile as any).boundsCRS;
+  expect(boundsCRS[1]).toBeCloseTo(-198, 6);
+  // ...but the lnglat bbox is clamped into the transform domain (no lat < -90)
+  expect((tile.bbox as any).south).toBeCloseTo(-90, 6);
+  expect((tile.bbox as any).north).toBeCloseTo(90, 6);
+  // the root level has no parent: index is returned unchanged
+  const parent = tileset.getParentIndex(tile.index);
+  expect(parent).toEqual(tile.index);
+});
+
+test('CRSTileset2D#getParentIndex across non-integer level ratios', () => {
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: GIBS_500M_TMS});
+  // select level 2 (5x3): crsUnitsPerPixel === level-2 cellSize exactly
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 512,
+    height: 512,
+    longitude: 150,
+    latitude: -60,
+    zoom: Math.log2(0.703125 / 0.140625)
+  });
+  tileset.update(viewport);
+  const tiles = tileset.selectedTiles!;
+  expect(tiles.length).toBeGreaterThan(0);
+  for (const tile of tiles) {
+    expect(tile.zoom).toBe(2);
+    const parent = tileset.getParentIndex(tile.index) as any;
+    expect(parent.z).toBe(1);
+    expect(parent.tm).toBe('1');
+    // parent is inside the 3x2 level-1 matrix even when the child center
+    // falls outside it (grids overflow the extent unevenly between levels)
+    expect(parent.x).toBeGreaterThanOrEqual(0);
+    expect(parent.x).toBeLessThan(3);
+    expect(parent.y).toBeGreaterThanOrEqual(0);
+    expect(parent.y).toBeLessThan(2);
+  }
+});
+
+test('CRSTileset2D#minZoom without extent returns no tiles instead of the whole grid', () => {
+  const tileset = new CRSTileset2D({
+    getTileData,
+    tileMatrixSet: GIBS_500M_TMS,
+    minZoom: 5
+  });
+  // Far above level 5: would select level 0
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 1024,
+    height: 512,
+    longitude: 0,
+    latitude: 0,
+    zoom: Math.log2(0.703125 / 0.5625)
+  });
+  tileset.update(viewport);
+  expect(tileset.selectedTiles).toEqual([]);
+});
+
+test('CRSTileset2D#view CRS swap flushes stale tiles', () => {
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: makeUTM18NTms(6)});
+  const utmViewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 3
+  });
+  tileset.update(utmViewport);
+  const before = tileset.selectedTiles![0];
+  // Same tileset, different view CRS (mismatch is warned; tiles must be recreated
+  // because cached bbox/boundsCommon metadata is meaningless under the new CRS)
+  const degViewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 3
+  });
+  tileset.update(degViewport);
+  // A mismatched TMS/CRS combination legitimately indexes nothing; the important
+  // part is that the stale cache is gone
+  expect(tileset.selectedTiles).not.toContain(before);
+
+  // Swapping back re-selects the same {x, y, z} but must create a fresh tile
+  // (the old one carried metadata computed under the swapped-in CRS rules)
+  const utmViewport2 = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 3
+  });
+  tileset.update(utmViewport2);
+  const again = tileset.selectedTiles!.find(t => t.id === before.id)!;
+  expect(again).toBeDefined();
+  expect(again).not.toBe(before);
 });
