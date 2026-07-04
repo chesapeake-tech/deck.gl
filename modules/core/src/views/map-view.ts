@@ -5,6 +5,8 @@
 import View, {CommonViewState, CommonViewProps} from './view';
 import WebMercatorViewport from '../viewports/web-mercator-viewport';
 import MapController from '../controllers/map-controller';
+import CRSViewport from '../viewports/crs-viewport';
+import type {CRSDefinition} from '../viewports/crs-utils';
 
 import type {NumericArray} from '../types/types';
 
@@ -50,6 +52,10 @@ export type MapViewProps = {
   altitude?: number;
   /** Whether to create an orthographic or perspective projection matrix. Default is `false` (perspective projection). */
   orthographic?: boolean;
+  /** Render the map in a coordinate reference system other than Web Mercator.
+   * Accepts a CRSDefinition with an injected transform, or 'EPSG:4326' (built in).
+   * Default 'EPSG:3857' (Web Mercator). */
+  crs?: CRSDefinition | 'EPSG:3857' | 'EPSG:4326';
 } & CommonViewProps<MapViewState>;
 
 export default class MapView extends View<MapViewState, MapViewProps> {
@@ -60,6 +66,10 @@ export default class MapView extends View<MapViewState, MapViewProps> {
   }
 
   getViewportType() {
+    const {crs} = this.props;
+    if (crs && crs !== 'EPSG:3857') {
+      return CRSViewport;
+    }
     return WebMercatorViewport;
   }
 
