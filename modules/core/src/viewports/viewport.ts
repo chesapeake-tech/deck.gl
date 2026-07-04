@@ -420,7 +420,11 @@ export default class Viewport {
   // INTERNAL METHODS
 
   /* eslint-disable complexity, max-statements */
-  private _initProps(opts: ViewportOptions) {
+  // `protected` (not `private`): the base constructor computes `center` via
+  // `this.projectPosition(...)` before subclass fields exist. A subclass whose
+  // projection depends on constructor arguments (e.g. CRSViewport) must re-run
+  // this after assigning its fields.
+  protected _initProps(opts: ViewportOptions) {
     const longitude = opts.longitude as number;
     const latitude = opts.latitude as number;
 
@@ -455,7 +459,7 @@ export default class Viewport {
   }
   /* eslint-enable complexity, max-statements */
 
-  private _initMatrices(opts: ViewportOptions) {
+  protected _initMatrices(opts: ViewportOptions) {
     const {
       // View matrix
       viewMatrix = IDENTITY,
