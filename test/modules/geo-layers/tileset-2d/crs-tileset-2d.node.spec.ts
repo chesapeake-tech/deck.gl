@@ -157,8 +157,12 @@ test('CRSTileset2D#real GIBS grid: overflow clamping, root parent, bbox domain c
   // exact grid rect overflows the CRS extent (row past the south pole)...
   const boundsCRS = (tile as any).boundsCRS;
   expect(boundsCRS[1]).toBeCloseTo(-198, 6);
-  // ...but the lnglat bbox is clamped into the transform domain (no lat < -90)
-  expect((tile.bbox as any).south).toBeCloseTo(-90, 6);
+  // ...and the lnglat bbox must cover the TRUE tile span: 4326's linear inverse is
+  // exact beyond the extent, and raster sublayers stretch imagery across the bbox —
+  // clamping it would render overflow tiles distorted
+  expect((tile.bbox as any).west).toBeCloseTo(-180, 6);
+  expect((tile.bbox as any).south).toBeCloseTo(-198, 6);
+  expect((tile.bbox as any).east).toBeCloseTo(108, 6);
   expect((tile.bbox as any).north).toBeCloseTo(90, 6);
   // the root level has no parent: index is returned unchanged
   const parent = tileset.getParentIndex(tile.index);
@@ -253,4 +257,46 @@ test('CRSTileset2D#view CRS swap flushes stale tiles', () => {
   const again = tileset.selectedTiles!.find(t => t.id === before.id)!;
   expect(again).toBeDefined();
   expect(again).not.toBe(before);
+});
+
+test('CRSTileset2D#bbox falls back to extent-clamped corners when inverse is non-finite', () => {
+  // A curved-CRS-like transform whose inverse is undefined outside the extent
+  const FUSSY_CRS = {
+    code: 'TEST:1',
+    units: 'degrees' as const,
+    extent: [-180, -90, 180, 90] as [number, number, number, number],
+    transform: {
+      forward: (lnglat: [number, number]): [number, number] => [lnglat[0], lnglat[1]],
+      inverse: (xy: [number, number]): [number, number] =>
+        xy[1] < -90 || xy[1] > 90 || xy[0] < -180 || xy[0] > 180 ? [NaN, NaN] : [xy[0], xy[1]]
+    }
+  };
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: GIBS_500M_TMS});
+  const viewport = new CRSViewport({
+    crs: FUSSY_CRS,
+    width: 1024,
+    height: 512,
+    longitude: 0,
+    latitude: 0,
+    zoom: Math.log2(0.703125 / 0.5625)
+  });
+  tileset.update(viewport);
+  const tile = tileset.selectedTiles!.find(t => (t.index as any).x === 0)!;
+  // boundsCRS keeps the true overflowing rect...
+  expect((tile as any).boundsCRS[1]).toBeCloseTo(-198, 6);
+  // ...but with a non-finite inverse the bbox corner falls back to the extent (no NaN)
+  expect((tile.bbox as any).south).toBeCloseTo(-90, 6);
+  expect(Number.isFinite((tile.bbox as any).west)).toBe(true);
+  expect(Number.isFinite((tile.bbox as any).east)).toBe(true);
+});
+
+test('CRSTileset2D#negative minZoom is clamped to 0 (ancestor-walk loop safety)', () => {
+  const tileset = new CRSTileset2D({
+    getTileData,
+    tileMatrixSet: GIBS_500M_TMS,
+    minZoom: -5
+  });
+  // getParentIndex returns the root index unchanged at level 0, so the base class's
+  // `getTileZoom(index) > _minZoom` ancestor walk must never see a negative floor
+  expect((tileset as any)._minZoom).toBe(0);
 });

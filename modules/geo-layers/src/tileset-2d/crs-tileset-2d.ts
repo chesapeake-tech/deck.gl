@@ -54,6 +54,16 @@ export class CRSTileset2D extends Tileset2D {
     }
   }
 
+  setOptions(opts: Tileset2DProps): void {
+    // Tile matrix indices start at 0 and getParentIndex returns the root index
+    // unchanged at level 0 — a negative minZoom would make the base class's
+    // ancestor walk (`getTileZoom(index) > _minZoom`) loop forever
+    if (typeof opts.minZoom === 'number' && opts.minZoom < 0) {
+      opts = {...opts, minZoom: 0};
+    }
+    super.setOptions(opts);
+  }
+
   getTileIndices({
     viewport,
     maxZoom,
@@ -108,16 +118,26 @@ export class CRSTileset2D extends Tileset2D {
     const tm = tms.tileMatrices[index.z];
     const [minX, minY, maxX, maxY] = getTileBoundsCRS(tm, index.x, index.y);
     const {transform, extent, commonUnitsPerCRSUnit} = viewport.crs;
-    // Tile grids may overflow the CRS extent (e.g. GIBS rows past the poles); clamp the
-    // corners into the transform's domain so `inverse` cannot produce non-finite lnglat
+    // Tile grids may overflow the CRS extent (e.g. GIBS level-0 tiles span 288 degrees).
+    // The bbox must cover the tile's TRUE span — raster sublayers stretch imagery across
+    // it, so squashing overflow tiles to the extent would distort them. Inverse-project
+    // the unclamped corners; only when a curved CRS's inverse is undefined out there
+    // (non-finite result) fall back to the corner clamped into the extent.
     const cx = (v: number) => Math.min(Math.max(v, extent[0]), extent[2]);
     const cy = (v: number) => Math.min(Math.max(v, extent[1]), extent[3]);
+    const invCorner = (x: number, y: number): [number, number] => {
+      const lnglat = transform.inverse([x, y]);
+      if (Number.isFinite(lnglat[0]) && Number.isFinite(lnglat[1])) {
+        return lnglat;
+      }
+      return transform.inverse([cx(x), cy(y)]);
+    };
     const corners = [
-      [cx(minX), cy(minY)],
-      [cx(maxX), cy(minY)],
-      [cx(minX), cy(maxY)],
-      [cx(maxX), cy(maxY)]
-    ].map(xy => transform.inverse(xy as [number, number]));
+      invCorner(minX, minY),
+      invCorner(maxX, minY),
+      invCorner(minX, maxY),
+      invCorner(maxX, maxY)
+    ];
     const lngs = corners.map(c => c[0]);
     const lats = corners.map(c => c[1]);
     return {
@@ -161,7 +181,10 @@ export class CRSTileset2D extends Tileset2D {
     const code = viewport.crs.code;
     if (!this._tms || raw !== this._rawTms || code !== this._crsCode) {
       // Flush tiles whose metadata (bbox/boundsCommon) and cellSize normalization were
-      // computed under a different CRS — they are meaningless after a MapView.crs swap
+      // computed under a different CRS — they are meaningless after a MapView.crs swap.
+      // Note: finalize() aborts and drops tiles without firing onTileUnload; acceptable
+      // here because every cached tile is invalid, but callers tracking tiles via
+      // onTileLoad/onTileUnload will not see individual unload events for this flush.
       if (this._tms && code !== this._crsCode) {
         this.finalize();
       }
