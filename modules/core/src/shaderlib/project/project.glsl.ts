@@ -47,6 +47,7 @@ layout(std140) uniform projectUniforms {
   vec3 coordinateOrigin;
   vec3 commonOrigin;
   bool pseudoMeters;
+  vec4 crsUnitsPerDegree;
 } project;
 
 
@@ -222,8 +223,24 @@ vec4 project_position(vec4 position, vec3 position64Low) {
       }
     }
   }
+  if (project.projectionMode == PROJECTION_MODE_CRS) {
+    if (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT) {
+      // Local affine approximation of the CRS projection around the view center.
+      // coordinateOrigin is the view center in lnglat; the projected center is
+      // re-added in clip space via project.center (offset mode).
+      mat2 crsJacobian = mat2(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      vec2 degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
+      return vec4(
+        crsJacobian * degreesFromOrigin,
+        project_size(position_world.z),
+        position_world.w
+      );
+    }
+    // CARTESIAN falls through to the origin subtraction below
+  }
   if (project.projectionMode == PROJECTION_MODE_IDENTITY ||
-    (project.projectionMode == PROJECTION_MODE_WEB_MERCATOR_AUTO_OFFSET &&
+    ((project.projectionMode == PROJECTION_MODE_WEB_MERCATOR_AUTO_OFFSET ||
+      project.projectionMode == PROJECTION_MODE_CRS) &&
     (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT ||
      project.coordinateSystem == COORDINATE_SYSTEM_CARTESIAN))) {
     // Subtract high part of 64 bit value. Convert remainder to float32, preserving precision.

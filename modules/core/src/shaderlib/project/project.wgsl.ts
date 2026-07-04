@@ -57,6 +57,7 @@ struct ProjectUniforms {
   coordinateOrigin: vec3<f32>,
   commonOrigin: vec3<f32>,
   pseudoMeters: i32,
+  crsUnitsPerDegree: vec4<f32>,
 };
 
 @group(0) @binding(auto)
@@ -241,8 +242,22 @@ fn project_position_vec4_f64(position: vec4<f32>, position64Low: vec3<f32>) -> v
       }
     }
   }
+  if (project.projectionMode == PROJECTION_MODE_CRS) {
+    if (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT) {
+      // Local affine approximation of the CRS projection around the view center.
+      let crsJacobian = mat2x2<f32>(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      let degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
+      return vec4<f32>(
+        crsJacobian * degreesFromOrigin,
+        project_size_float(position_world.z),
+        position_world.w
+      );
+    }
+    // CARTESIAN falls through to the origin subtraction below
+  }
   if (project.projectionMode == PROJECTION_MODE_IDENTITY ||
-      (project.projectionMode == PROJECTION_MODE_WEB_MERCATOR_AUTO_OFFSET &&
+      ((project.projectionMode == PROJECTION_MODE_WEB_MERCATOR_AUTO_OFFSET ||
+        project.projectionMode == PROJECTION_MODE_CRS) &&
        (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT ||
         project.coordinateSystem == COORDINATE_SYSTEM_CARTESIAN))) {
     position_world = vec4f(position_world.xyz - project.coordinateOrigin, position_world.w);

@@ -97,6 +97,26 @@ export function getOffsetOrigin(
       }
       break;
 
+    case PROJECTION_MODE.CRS:
+      if (coordinateSystem === 'lnglat') {
+        // viewport center in world space
+        // @ts-expect-error when using LNGLAT coordinates, we expect the viewport to be geospatial, in which case geospatialOrigin is defined
+        shaderCoordinateOrigin = geospatialOrigin;
+      } else if (coordinateSystem === 'cartesian') {
+        // viewport center in common space
+        shaderCoordinateOrigin = [
+          Math.fround(viewport.center[0]),
+          Math.fround(viewport.center[1]),
+          0
+        ];
+        // Geospatial origin (wgs84) must match shaderCoordinateOrigin (common)
+        geospatialOrigin = viewport.unprojectPosition(shaderCoordinateOrigin);
+        shaderCoordinateOrigin[0] -= coordinateOrigin[0];
+        shaderCoordinateOrigin[1] -= coordinateOrigin[1];
+        shaderCoordinateOrigin[2] -= coordinateOrigin[2];
+      }
+      break;
+
     case PROJECTION_MODE.IDENTITY:
       shaderCoordinateOrigin = viewport.position.map(Math.fround) as Vec3;
       shaderCoordinateOrigin[2] = shaderCoordinateOrigin[2] || 0;
@@ -200,6 +220,9 @@ export type ProjectUniforms = {
   commonUnitsPerMeter: Vec3;
   commonUnitsPerWorldUnit: Vec3;
   commonUnitsPerWorldUnit2: Vec3;
+  /** PROJECTION_MODE.CRS only: column-major 2x2 Jacobian of the lnglat->common
+   * transform at the view center, in common units per degree */
+  crsUnitsPerDegree: Vec4;
   /** 2^zoom */
   scale: number;
   wrapLongitude: boolean;
@@ -311,6 +334,7 @@ function calculateViewportUniforms({
     commonUnitsPerMeter: distanceScales.unitsPerMeter as Vec3,
     commonUnitsPerWorldUnit: distanceScales.unitsPerMeter as Vec3,
     commonUnitsPerWorldUnit2: DEFAULT_PIXELS_PER_UNIT2,
+    crsUnitsPerDegree: [1, 0, 0, 1],
     scale: viewport.scale, // This is the mercator scale (2 ** zoom)
     wrapLongitude: false,
 
@@ -357,6 +381,16 @@ function calculateViewportUniforms({
       default:
         break;
     }
+  }
+
+  if (viewport.projectionMode === PROJECTION_MODE.CRS && geospatialOrigin) {
+    // The diagonal commonUnitsPerWorldUnit cannot represent grid convergence
+    // (the local rotation of the CRS grid vs true north); upload the full 2x2 Jacobian.
+    uniforms.crsUnitsPerDegree = (
+      viewport as Viewport & {
+        getCRSJacobianAtOrigin: (origin: number[]) => Vec4;
+      }
+    ).getCRSJacobianAtOrigin(geospatialOrigin);
   }
 
   return uniforms;
