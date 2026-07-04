@@ -10,7 +10,7 @@ Common space is the CRS plane: the CRS's own units, offset so that the extent mi
 
 ```js
 import proj4 from 'proj4';
-import {CRSViewport} from '@deck.gl/core';
+import {_CRSViewport as CRSViewport} from '@deck.gl/core';
 
 const converter = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
 
@@ -62,7 +62,7 @@ Parameters:
 
   + `longitude` (number, optional) - Longitude of the view center, in degrees.
   + `latitude` (number, optional) - Latitude of the view center, in degrees.
-  + `zoom` (number, optional) - Zoom level.
+  + `zoom` (number, optional) - Zoom level. Default `0`.
   + `pitch` (number, optional) - Tilt of the camera in degrees. Default `0`.
   + `bearing` (number, optional) - Heading of the camera in degrees. `0` is CRS grid-north up. Default `0`.
   + `position` (number[], optional) - Viewport center offsets from lng, lat, in meters.
@@ -131,7 +131,7 @@ Returns:
 
 #### `fitBounds` {#fitbounds}
 
-Returns a new viewport that fits around the given lnglat bounding box. Viewport `width` and `height` must be either set or provided as options. Only supports non-perspective mode.
+Returns a new viewport that fits around the given lnglat bounding box. The fitted viewport uses the current viewport's `width` and `height`. Only supports non-perspective mode.
 
 Parameters:
 
