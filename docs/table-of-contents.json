@@ -163,7 +163,8 @@
         "items": [
           "api-reference/core/viewport",
           "api-reference/core/globe-viewport",
-          "api-reference/core/web-mercator-viewport"
+          "api-reference/core/web-mercator-viewport",
+          "api-reference/core/crs-viewport"
         ]
       },
       {
