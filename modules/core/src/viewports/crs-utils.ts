@@ -28,10 +28,8 @@ export type CRSDefinition = {
   units?: 'meters' | 'degrees';
 };
 
-export type NormalizedCRS = {
-  code: string;
-  transform: CRSTransform;
-  extent: [number, number, number, number];
+/** CRSDefinition with `units` defaulted (no longer optional) and its derived world scale. */
+export type NormalizedCRS = CRSDefinition & {
   units: 'meters' | 'degrees';
   /** Common units per CRS unit: CRS_WORLD_SIZE / extent width */
   commonUnitsPerCRSUnit: number;

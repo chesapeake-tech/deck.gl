@@ -81,11 +81,32 @@ const view = new MapView({
 ```
 
 The view state remains `{longitude, latitude, zoom, bearing, pitch}` regardless of CRS,
-so switching CRS is a one-prop change. Layer data in `COORDINATE_SYSTEM.LNGLAT` renders
-via a local affine approximation around the view center: exact for EPSG:4326, sub-pixel
-at city/survey scales for projected CRSs, degrading only for continental extents in
-strongly curved projections. Longitude wrapping (`repeat`) is not supported with a
-non-Mercator `crs`.
+so switching `crs` only requires changing that one prop — no other view-state field needs
+to change. Zoom itself, however, is **extent-relative**: at zoom `z`, the CRS's `extent`
+spans `512 * 2^z` pixels in common space, so `'EPSG:4326'` (whose 360°×180° extent is
+angularly comparable to Mercator's whole-world extent) zooms comparably to Web Mercator,
+while a projected CRS with a much smaller extent (e.g. a single UTM zone, a few hundred
+kilometers wide) reaches the same zoom number at a much more zoomed-in ground scale. To
+preserve ground scale when switching `crs` (or comparing viewports), adjust zoom by the
+ratio of `distanceScales.unitsPerMeter`:
+
+```js
+const newZoom =
+  zoom + Math.log2(sourceViewport.distanceScales.unitsPerMeter[0] / targetViewport.distanceScales.unitsPerMeter[0]);
+```
+
+`MapController`'s default `minZoom: 0, maxZoom: 20` are calibrated for Web Mercator's
+extent; applications using a projected CRS with a smaller extent should set their own
+`minZoom`/`maxZoom`.
+
+Layer data in `COORDINATE_SYSTEM.LNGLAT` renders via a local affine approximation around
+the view center: exact for EPSG:4326, sub-pixel at city/survey scales for projected CRSs,
+degrading only for continental extents in strongly curved projections. Longitude wrapping
+(`repeat`) is not supported with a non-Mercator `crs`.
+
+Define the `crs` object once outside your render loop. A new object identity on every
+render creates fresh `transform` closures, which defeats `View.equals` and forces the
+viewport to be reconstructed on every render.
 
 See [CRSViewport](./crs-viewport.md) for the viewport implementation and its limitations.
 

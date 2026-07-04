@@ -229,6 +229,8 @@ vec4 project_position(vec4 position, vec3 position64Low) {
       // coordinateOrigin is the view center in lnglat; the projected center is
       // re-added in clip space via project.center (offset mode).
       mat2 crsJacobian = mat2(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      // Assumes an identity modelMatrix: position64Low.xy is added directly here, unlike the
+      // generic path below which applies modelMatrix via project_offset_(modelMatrix * vec4(position64Low, 0)).
       vec2 degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
       return vec4(
         crsJacobian * degreesFromOrigin,

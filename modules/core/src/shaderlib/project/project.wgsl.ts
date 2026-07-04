@@ -246,6 +246,8 @@ fn project_position_vec4_f64(position: vec4<f32>, position64Low: vec3<f32>) -> v
     if (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT) {
       // Local affine approximation of the CRS projection around the view center.
       let crsJacobian = mat2x2<f32>(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      // Assumes an identity modelMatrix: position64Low.xy is added directly here, unlike the
+      // generic path below which applies modelMatrix via project_offset_(modelMatrix * vec4(position64Low, 0)).
       let degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
       return vec4<f32>(
         crsJacobian * degreesFromOrigin,

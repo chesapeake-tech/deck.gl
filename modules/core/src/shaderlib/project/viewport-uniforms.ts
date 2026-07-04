@@ -78,25 +78,6 @@ export function getOffsetOrigin(
       break;
 
     case PROJECTION_MODE.WEB_MERCATOR_AUTO_OFFSET:
-      if (coordinateSystem === 'lnglat') {
-        // viewport center in world space
-        // @ts-expect-error when using LNGLAT coordinates, we expect the viewport to be geospatial, in which case geospatialOrigin is defined
-        shaderCoordinateOrigin = geospatialOrigin;
-      } else if (coordinateSystem === 'cartesian') {
-        // viewport center in common space
-        shaderCoordinateOrigin = [
-          Math.fround(viewport.center[0]),
-          Math.fround(viewport.center[1]),
-          0
-        ];
-        // Geospatial origin (wgs84) must match shaderCoordinateOrigin (common)
-        geospatialOrigin = viewport.unprojectPosition(shaderCoordinateOrigin);
-        shaderCoordinateOrigin[0] -= coordinateOrigin[0];
-        shaderCoordinateOrigin[1] -= coordinateOrigin[1];
-        shaderCoordinateOrigin[2] -= coordinateOrigin[2];
-      }
-      break;
-
     case PROJECTION_MODE.CRS:
       if (coordinateSystem === 'lnglat') {
         // viewport center in world space
