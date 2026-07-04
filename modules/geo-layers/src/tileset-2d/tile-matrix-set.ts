@@ -162,10 +162,12 @@ export function getTileIndicesInBounds(
   return indices;
 }
 
-/** The tile containing a CRS point, or null if the point is outside the matrix */
+/** The tile containing a CRS point. Outside the matrix: returns null, or the nearest
+ * valid tile when `options.clamp` is set. */
 export function getTileIndexAtPoint(
   tm: NormalizedTileMatrix,
-  point: [number, number]
+  point: [number, number],
+  options: {clamp?: boolean} = {}
 ): {x: number; y: number} | null {
   const [originX, originY] = tm.pointOfOrigin;
   const x = Math.floor((point[0] - originX) / tm.tileSpanX);
@@ -174,6 +176,12 @@ export function getTileIndexAtPoint(
       ? Math.floor((point[1] - originY) / tm.tileSpanY)
       : Math.floor((originY - point[1]) / tm.tileSpanY);
   if (x < 0 || x >= tm.matrixWidth || y < 0 || y >= tm.matrixHeight) {
+    if (options.clamp) {
+      return {
+        x: Math.min(Math.max(x, 0), tm.matrixWidth - 1),
+        y: Math.min(Math.max(y, 0), tm.matrixHeight - 1)
+      };
+    }
     return null;
   }
   return {x, y};

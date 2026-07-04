@@ -60,8 +60,9 @@ Create `test/modules/geo-layers/tileset-2d/tms-fixtures.ts`:
 
 import type {TileMatrixSet} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 
-/** GIBS-style WorldCRS84Quad with 512px tiles: level z covers the world in 2^(z+1) x 2^z tiles.
- * cellSize at level 0 is 180 / 512 = 0.3515625 deg/px. */
+/** Synthetic WorldCRS84Quad-style quadtree with 512px tiles: level z covers the world in
+ * 2^(z+1) x 2^z tiles. cellSize at level 0 is 180 / 512 = 0.3515625 deg/px.
+ * (Not a real service's grid — the real GIBS '500m' TMS has non-power-of-two matrices.) */
 export function makeWorldCRS84Quad512(numLevels: number): TileMatrixSet {
   return {
     id: 'WorldCRS84Quad-512',
@@ -1128,24 +1129,35 @@ import {TileLayer} from '@deck.gl/geo-layers';
 import {BitmapLayer} from '@deck.gl/layers';
 import {MapView} from '@deck.gl/core';
 
-// NASA GIBS EPSG:4326, 512px tiles: level z covers the world in 2^(z+1) x 2^z tiles
-const GIBS_4326 = {
+// NASA GIBS EPSG:4326 '500m' TileMatrixSet, verbatim from the WMTS capabilities
+// (levels 0-7; non-power-of-two matrices: 2x1, 3x2, 5x3, 10x5, ...)
+const GIBS_500M = {
+  id: '500m',
   crs: 'EPSG:4326',
-  tileMatrices: Array.from({length: 9}, (_, z) => ({
+  tileMatrices: [
+    [223632905.6114871, 2, 1],
+    [111816452.8057436, 3, 2],
+    [55908226.40287178, 5, 3],
+    [27954113.20143589, 10, 5],
+    [13977056.60071795, 20, 10],
+    [6988528.300358973, 40, 20],
+    [3494264.150179486, 80, 40],
+    [1747132.075089743, 160, 80]
+  ].map(([scaleDenominator, matrixWidth, matrixHeight], z) => ({
     id: String(z),
-    cellSize: 0.3515625 / 2 ** z,
+    scaleDenominator,
     pointOfOrigin: [-180, 90],
     tileWidth: 512,
     tileHeight: 512,
-    matrixWidth: 2 ** (z + 1),
-    matrixHeight: 2 ** z
+    matrixWidth,
+    matrixHeight
   }))
 };
 
 const layer = new TileLayer({
-  data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/default/EPSG4326_500m/{z}/{y}/{x}.jpeg',
-  tileMatrixSet: GIBS_4326,
-  maxZoom: 8,
+  data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tm}/{y}/{x}.jpeg',
+  tileMatrixSet: GIBS_500M,
+  maxZoom: 7,
   renderSubLayers: props => {
     const {west, south, east, north} = props.tile.bbox;
     return new BitmapLayer(props, {
@@ -1217,17 +1229,28 @@ import {TextLayer} from '@deck.gl/layers'; // idem
 2. Add TMS definitions after `CRS_OPTIONS` (module scope — stable identities):
 
 ```jsx
-// NASA GIBS EPSG:4326 (512px tiles): level z covers the world in 2^(z+1) x 2^z tiles
+// NASA GIBS EPSG:4326 '500m' TileMatrixSet, verbatim from the WMTS capabilities
+// (see test/apps/crs-viewport/app.jsx for the as-committed version)
 const GIBS_4326_TMS = {
+  id: '500m',
   crs: 'EPSG:4326',
-  tileMatrices: Array.from({length: 9}, (_, z) => ({
+  tileMatrices: [
+    [223632905.6114871, 2, 1],
+    [111816452.8057436, 3, 2],
+    [55908226.40287178, 5, 3],
+    [27954113.20143589, 10, 5],
+    [13977056.60071795, 20, 10],
+    [6988528.300358973, 40, 20],
+    [3494264.150179486, 80, 40],
+    [1747132.075089743, 160, 80]
+  ].map(([scaleDenominator, matrixWidth, matrixHeight], z) => ({
     id: String(z),
-    cellSize: 0.3515625 / 2 ** z,
+    scaleDenominator,
     pointOfOrigin: [-180, 90],
     tileWidth: 512,
     tileHeight: 512,
-    matrixWidth: 2 ** (z + 1),
-    matrixHeight: 2 ** z
+    matrixWidth,
+    matrixHeight
   }))
 };
 
@@ -1258,9 +1281,9 @@ const UTM_TMS = {
       tileLayers.push(
         new TileLayer({
           id: 'gibs',
-          data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/default/EPSG4326_500m/{z}/{y}/{x}.jpeg',
+          data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tm}/{y}/{x}.jpeg',
           tileMatrixSet: GIBS_4326_TMS,
-          maxZoom: 8,
+          maxZoom: 7,
           renderSubLayers: props => {
             const {west, south, east, north} = props.tile.bbox;
             return new BitmapLayer(props, {
