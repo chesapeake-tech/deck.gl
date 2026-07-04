@@ -35,3 +35,30 @@ test('MapView#crs EPSG:4326 makes CRSViewport', () => {
   const viewport = view.makeViewport({width: 800, height: 600, viewState: VIEW_STATE});
   expect(viewport).toBeInstanceOf(CRSViewport);
 });
+
+test('MapView#crs defaults controller normalize to false', () => {
+  // Mercator-world normalization (world-fit min zoom, equator-centered maxBounds
+  // clamp) is computed in Web Mercator coordinates and snaps a CRS view out of
+  // its data extent on zoom-out.
+  const view = new MapView({crs: UTM18N, controller: true});
+  expect(view.controller).toMatchObject({normalize: false});
+
+  const view4326 = new MapView({crs: 'EPSG:4326', controller: {dragPan: false}});
+  expect(view4326.controller).toMatchObject({normalize: false, dragPan: false});
+});
+
+test('MapView#crs controller normalize is user-overridable', () => {
+  const view = new MapView({crs: UTM18N, controller: {normalize: true}});
+  expect(view.controller).toMatchObject({normalize: true});
+});
+
+test('MapView#default crs keeps controller options untouched', () => {
+  const view = new MapView({controller: true});
+  expect(view.controller).not.toHaveProperty('normalize');
+
+  const mercator = new MapView({crs: 'EPSG:3857', controller: true});
+  expect(mercator.controller).not.toHaveProperty('normalize');
+
+  const disabled = new MapView({crs: UTM18N, controller: false});
+  expect(disabled.controller).toBeNull();
+});

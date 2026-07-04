@@ -102,9 +102,10 @@ extent; applications using a projected CRS with a smaller extent should set thei
 Layer data in `COORDINATE_SYSTEM.LNGLAT` renders via a local affine approximation around
 the view center: exact for EPSG:4326, sub-pixel at city/survey scales for projected CRSs,
 degrading only for continental extents in strongly curved projections. Longitude wrapping
-(`repeat`) is not supported with a non-Mercator `crs`. When using a non-Mercator `crs` with
-`MapController`, set `controller: {normalize: false}` to prevent view-state normalization using
-Web Mercator math, which would snap the view toward the equator and clamp zoom incorrectly — see
+(`repeat`) is not supported with a non-Mercator `crs`. With a non-Mercator `crs`, `MapView`
+defaults the controller's `normalize` option to `false`: `MapController`'s normalization is
+computed in Web Mercator world coordinates and would snap the view toward the equator and clamp
+zoom-out incorrectly. An explicit `controller: {normalize: ...}` still takes precedence — see
 [CRSViewport Limitations](./crs-viewport.md#limitations) for details.
 
 Define the `crs` object once outside your render loop. A new object identity on every
