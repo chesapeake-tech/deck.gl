@@ -70,6 +70,8 @@ export function normalizeTileMatrixSet(
     throw new Error('TileMatrixSet: tileMatrices must not be empty');
   }
   const normalized = tileMatrices.map(tm => {
+    // Note: derives cellSize from OGC 0.28mm/px convention when explicit cellSize is omitted.
+    // Some registries (e.g., CanadianNAD83_LCC) do not follow this convention; always prefer explicit cellSize.
     const cellSize =
       tm.cellSize ??
       (tm.scaleDenominator !== undefined

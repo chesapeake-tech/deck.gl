@@ -299,6 +299,8 @@ rect in CRS units) and `boundsCommon` (the same rect in deck's common space, for
 positioning of raster sublayers with `COORDINATE_SYSTEM.CARTESIAN`). The TMS must be defined in
 the same CRS as the view. Define the object once outside the render loop.
 
+**Important:** When a tile matrix omits `cellSize`, the implementation derives it from `scaleDenominator` using the OGC standard 0.28mm/px convention. However, some published TileMatrixSet registries (e.g., CanadianNAD83_LCC) do not follow this convention, and their true `cellSize` may differ significantly (e.g., 5.8%). A mismatch causes tiles to be fetched successfully (HTTP 200) but rendered blank or far off-grid. **Always prefer copying the registry's explicit `cellSize` per tile matrix verbatim.** Only rely on scaleDenominator-derived `cellSize` when the service genuinely follows the OGC 0.28mm convention.
+
 Prop semantics with `tileMatrixSet`:
 
 - [`minZoom`](#minzoom)/[`maxZoom`](#maxzoom) are tile matrix **array positions** (0 =
