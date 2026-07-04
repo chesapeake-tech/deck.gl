@@ -7,7 +7,8 @@ import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import DeckGL from '@deck.gl/react';
 import {MapView} from '@deck.gl/core';
-import {GeoJsonLayer, PathLayer, ScatterplotLayer} from '@deck.gl/layers';
+import {BitmapLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer} from '@deck.gl/layers';
+import {TileLayer} from '@deck.gl/geo-layers';
 import proj4 from 'proj4';
 
 const utm18n = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
@@ -26,6 +27,54 @@ const CRS_OPTIONS = {
   'Web Mercator': 'EPSG:3857',
   'EPSG:4326': 'EPSG:4326',
   'UTM 18N': UTM18N
+};
+
+// NASA GIBS EPSG:4326 '500m' TileMatrixSet, verbatim from the WMTS capabilities.
+// Non-power-of-two matrix dimensions and grids that overflow the world extent —
+// a good generality test for the TileMatrixSet indexing.
+const GIBS_SCALE_DENOMINATORS = [
+  223632905.6114871, 111816452.8057436, 55908226.40287178, 27954113.20143589, 13977056.60071795,
+  6988528.300358973, 3494264.150179486, 1747132.075089743
+];
+const GIBS_MATRIX_SIZES = [
+  [2, 1],
+  [3, 2],
+  [5, 3],
+  [10, 5],
+  [20, 10],
+  [40, 20],
+  [80, 40],
+  [160, 80]
+];
+const GIBS_4326_TMS = {
+  id: '500m',
+  crs: 'EPSG:4326',
+  tileMatrices: GIBS_SCALE_DENOMINATORS.map((scaleDenominator, z) => ({
+    id: String(z),
+    scaleDenominator,
+    pointOfOrigin: [-180, 90],
+    tileWidth: 512,
+    tileHeight: 512,
+    matrixWidth: GIBS_MATRIX_SIZES[z][0],
+    matrixHeight: GIBS_MATRIX_SIZES[z][1]
+  }))
+};
+
+// Demo UTM 18N TMS derived from the zone extent (non-square: 14 rows at level 0)
+const UTM_TMS = {
+  crs: 'EPSG:32618',
+  tileMatrices: Array.from({length: 10}, (_, z) => {
+    const cellSize = (UTM18N.extent[2] - UTM18N.extent[0]) / 512 / 2 ** z;
+    return {
+      id: String(z),
+      cellSize,
+      pointOfOrigin: [UTM18N.extent[0], UTM18N.extent[3]],
+      tileWidth: 512,
+      tileHeight: 512,
+      matrixWidth: 2 ** z,
+      matrixHeight: Math.ceil((UTM18N.extent[3] - UTM18N.extent[1]) / (cellSize * 512))
+    };
+  })
 };
 
 // Graticule: a lnglat grid to make projection distortion visible
@@ -56,8 +105,93 @@ const CONTROLS_STYLE = {
 
 function App() {
   const [crsName, setCrsName] = useState('UTM 18N');
+  const [showTiles, setShowTiles] = useState(true);
+
+  const tileLayers = [];
+  if (showTiles) {
+    if (crsName === 'EPSG:4326') {
+      tileLayers.push(
+        new TileLayer({
+          id: 'gibs',
+          data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tm}/{y}/{x}.jpeg',
+          tileMatrixSet: GIBS_4326_TMS,
+          maxZoom: 7,
+          renderSubLayers: props => {
+            const {west, south, east, north} = props.tile.bbox;
+            return new BitmapLayer(props, {
+              data: null,
+              image: props.data,
+              bounds: [west, south, east, north]
+            });
+          }
+        })
+      );
+    } else if (crsName === 'UTM 18N') {
+      // No public UTM tile server: render the tile grid itself to verify indexing
+      tileLayers.push(
+        new TileLayer({
+          id: 'utm-grid',
+          tileMatrixSet: UTM_TMS,
+          getTileData: ({index}) => index,
+          renderSubLayers: props => {
+            // Exact tile rect: inverse-project the CRS-unit corners (tile.boundsCRS)
+            const [minX, minY, maxX, maxY] = props.tile.boundsCRS;
+            const inv = UTM18N.transform.inverse;
+            const {x, y, z} = props.tile.index;
+            return [
+              new PathLayer(props, {
+                id: `${props.id}-outline`,
+                data: [
+                  {
+                    path: [
+                      inv([minX, minY]),
+                      inv([maxX, minY]),
+                      inv([maxX, maxY]),
+                      inv([minX, maxY]),
+                      inv([minX, minY])
+                    ]
+                  }
+                ],
+                getPath: d => d.path,
+                getColor: [255, 140, 0, 200],
+                widthMinPixels: 2
+              }),
+              new TextLayer(props, {
+                id: `${props.id}-label`,
+                data: [
+                  {position: inv([(minX + maxX) / 2, (minY + maxY) / 2]), text: `${z}/${x}/${y}`}
+                ],
+                getPosition: d => d.position,
+                getText: d => d.text,
+                getSize: 14,
+                getColor: [200, 100, 0, 255]
+              })
+            ];
+          }
+        })
+      );
+    } else {
+      // Web Mercator regression: default OSM indexing, no tileMatrixSet
+      tileLayers.push(
+        new TileLayer({
+          id: 'osm',
+          data: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          maxZoom: 19,
+          renderSubLayers: props => {
+            const {west, south, east, north} = props.tile.bbox;
+            return new BitmapLayer(props, {
+              data: null,
+              image: props.data,
+              bounds: [west, south, east, north]
+            });
+          }
+        })
+      );
+    }
+  }
 
   const layers = [
+    ...tileLayers,
     new GeoJsonLayer({
       id: 'states',
       data: 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json',
@@ -95,6 +229,14 @@ function App() {
             {name}
           </button>
         ))}
+        <label style={{marginLeft: 8}}>
+          <input
+            type="checkbox"
+            checked={showTiles}
+            onChange={e => setShowTiles(e.target.checked)}
+          />
+          tiles
+        </label>
       </div>
       <DeckGL
         views={new MapView({crs: CRS_OPTIONS[crsName]})}
