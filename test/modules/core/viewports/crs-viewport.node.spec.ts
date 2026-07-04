@@ -5,7 +5,7 @@
 import {test, expect} from 'vitest';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
-import {UTM18N} from './crs-utils.node.spec';
+import {UTM18N} from './crs-fixtures';
 
 const BASE_PROPS = {width: 800, height: 600, crs: UTM18N};
 

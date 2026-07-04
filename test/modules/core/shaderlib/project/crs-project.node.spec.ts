@@ -7,7 +7,7 @@ import {WebMercatorViewport} from '@deck.gl/core';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
 import {getUniformsFromViewport} from '@deck.gl/core/shaderlib/project/viewport-uniforms';
-import {UTM18N} from '../../viewports/crs-utils.node.spec';
+import {UTM18N} from '../../viewports/crs-fixtures';
 
 function makeViewport(props = {}) {
   return new CRSViewport({
