@@ -12,7 +12,8 @@ import {
   GetPickingInfoParams,
   DefaultProps,
   FilterContext,
-  _flatten as flatten
+  _flatten as flatten,
+  _deepEqual as deepEqual
 } from '@deck.gl/core';
 import {GeoJsonLayer} from '@deck.gl/layers';
 import {LayersList} from '@deck.gl/core';
@@ -244,7 +245,9 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
       (changeFlags.updateTriggersChanged &&
         (changeFlags.updateTriggersChanged.all || changeFlags.updateTriggersChanged.getTileData));
 
-    if (tileset && props.tileMatrixSet !== oldProps.tileMatrixSet) {
+    // Deep comparison (matching the prop's `compare` semantics) so a spread-but-equal
+    // tileMatrixSet object does not needlessly discard the tile cache
+    if (tileset && !deepEqual(props.tileMatrixSet, oldProps.tileMatrixSet, -1)) {
       tileset.finalize();
       tileset = null;
     }

@@ -248,24 +248,36 @@ import {TileLayer} from '@deck.gl/geo-layers';
 import {BitmapLayer} from '@deck.gl/layers';
 import {MapView} from '@deck.gl/core';
 
-// NASA GIBS EPSG:4326, 512px tiles: level z covers the world in 2^(z+1) x 2^z tiles
-const GIBS_4326 = {
+// NASA GIBS EPSG:4326 '500m' TileMatrixSet, verbatim from the WMTS capabilities.
+// Levels 0-7; matrix dimensions are not powers of two and the grid overflows the
+// world extent (level-0 tiles span 288 degrees) - both are supported.
+const GIBS_500M = {
+  id: '500m',
   crs: 'EPSG:4326',
-  tileMatrices: Array.from({length: 9}, (_, z) => ({
+  tileMatrices: [
+    [223632905.6114871, 2, 1],
+    [111816452.8057436, 3, 2],
+    [55908226.40287178, 5, 3],
+    [27954113.20143589, 10, 5],
+    [13977056.60071795, 20, 10],
+    [6988528.300358973, 40, 20],
+    [3494264.150179486, 80, 40],
+    [1747132.075089743, 160, 80]
+  ].map(([scaleDenominator, matrixWidth, matrixHeight], z) => ({
     id: String(z),
-    cellSize: 0.3515625 / 2 ** z,
+    scaleDenominator,
     pointOfOrigin: [-180, 90],
     tileWidth: 512,
     tileHeight: 512,
-    matrixWidth: 2 ** (z + 1),
-    matrixHeight: 2 ** z
+    matrixWidth,
+    matrixHeight
   }))
 };
 
 const layer = new TileLayer({
-  data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/default/EPSG4326_500m/{z}/{y}/{x}.jpeg',
-  tileMatrixSet: GIBS_4326,
-  maxZoom: 8,
+  data: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tm}/{y}/{x}.jpeg',
+  tileMatrixSet: GIBS_500M,
+  maxZoom: 7,
   renderSubLayers: props => {
     const {west, south, east, north} = props.tile.bbox;
     return new BitmapLayer(props, {
@@ -286,6 +298,23 @@ and `{tm}` the tile matrix `id` string. Tiles additionally expose `boundsCRS` (t
 rect in CRS units) and `boundsCommon` (the same rect in deck's common space, for exact
 positioning of raster sublayers with `COORDINATE_SYSTEM.CARTESIAN`). The TMS must be defined in
 the same CRS as the view. Define the object once outside the render loop.
+
+Prop semantics with `tileMatrixSet`:
+
+- [`minZoom`](#minzoom)/[`maxZoom`](#maxzoom) are tile matrix **array positions** (0 =
+  coarsest), not OSM zoom levels.
+- [`extent`](#extent) stays `[west, south, east, north]` in longitude/latitude. It is applied
+  as the axis-aligned hull of its projected corners, which in strongly curved CRSs can include
+  (never drop) some tiles just outside the intended region.
+- [`tileSize`](#tilesize) is ignored — the TMS's `tileWidth`/`tileHeight` and per-level
+  `cellSize` define display density.
+- [`zRange`](#zrange) is ignored (terrain is not supported in CRS views).
+- The `{-y}` URL template token assumes `2^z` rows and is wrong for TMSs with other matrix
+  heights — use services addressed by `{y}`/`{tm}` instead.
+- At high pitch the visible area is estimated as a single axis-aligned box at one tile level,
+  so far-field tiles over-fetch at the near-field resolution (multi-level far-field LOD is
+  future work); screen corners past the horizon or outside the projection's domain fall back
+  to the CRS extent, bounded by the matrix dimensions.
 
 #### `tileSize` (number, optional) {#tilesize}
 

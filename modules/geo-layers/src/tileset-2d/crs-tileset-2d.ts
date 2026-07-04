@@ -45,7 +45,7 @@ export class CRSTileset2D extends Tileset2D {
   private _tms: NormalizedTileMatrixSet | null = null;
   private _rawTms: TileMatrixSet | null = null;
   private _crsViewport: CRSViewportLike | null = null;
-  private _crsWarned = false;
+  private _crsCode: string | null = null;
 
   constructor(opts: CRSTileset2DProps) {
     super(opts);
@@ -79,6 +79,11 @@ export class CRSTileset2D extends Tileset2D {
       Math.pow(2, -(viewport.zoom + zoomOffset)) / crsViewport.crs.commonUnitsPerCRSUnit;
     let z = selectTileMatrix(tms, crsUnitsPerPixel);
     if (typeof minZoom === 'number' && Number.isFinite(minZoom) && z < minZoom) {
+      // Mirror the OSM path (utils.ts getTileIndices): fetching minZoom tiles for a view
+      // far above them can request the entire grid — only do it when `extent` bounds the area
+      if (!extent) {
+        return [];
+      }
       z = minZoom;
     }
     if (typeof maxZoom === 'number' && Number.isFinite(maxZoom) && z > maxZoom) {
@@ -103,11 +108,15 @@ export class CRSTileset2D extends Tileset2D {
     const tm = tms.tileMatrices[index.z];
     const [minX, minY, maxX, maxY] = getTileBoundsCRS(tm, index.x, index.y);
     const {transform, extent, commonUnitsPerCRSUnit} = viewport.crs;
+    // Tile grids may overflow the CRS extent (e.g. GIBS rows past the poles); clamp the
+    // corners into the transform's domain so `inverse` cannot produce non-finite lnglat
+    const cx = (v: number) => Math.min(Math.max(v, extent[0]), extent[2]);
+    const cy = (v: number) => Math.min(Math.max(v, extent[1]), extent[3]);
     const corners = [
-      [minX, minY],
-      [maxX, minY],
-      [minX, maxY],
-      [maxX, maxY]
+      [cx(minX), cy(minY)],
+      [cx(maxX), cy(minY)],
+      [cx(minX), cy(maxY)],
+      [cx(maxX), cy(maxY)]
     ].map(xy => transform.inverse(xy as [number, number]));
     const lngs = corners.map(c => c[0]);
     const lats = corners.map(c => c[1]);
@@ -130,31 +139,42 @@ export class CRSTileset2D extends Tileset2D {
 
   getParentIndex(index: TileIndex): CRSTileIndex {
     const tms = this._tms!;
+    if (index.z <= 0) {
+      // Root level has no parent; callers guard on getTileZoom(index) > minZoom,
+      // so return the index unchanged rather than indexing tileMatrices[-1]
+      return index as CRSTileIndex;
+    }
     const z = index.z - 1;
     const parentTm = tms.tileMatrices[z];
     const tm = tms.tileMatrices[index.z];
     const [minX, minY, maxX, maxY] = getTileBoundsCRS(tm, index.x, index.y);
-    const parent = getTileIndexAtPoint(parentTm, [(minX + maxX) / 2, (minY + maxY) / 2]);
-    if (!parent) {
-      return {x: 0, y: 0, z, tm: parentTm.id};
-    }
+    // Clamp: grids may overflow the CRS extent unevenly between levels, so a child
+    // center can fall just outside the parent matrix — use the nearest valid parent
+    const parent = getTileIndexAtPoint(parentTm, [(minX + maxX) / 2, (minY + maxY) / 2], {
+      clamp: true
+    })!;
     return {x: parent.x, y: parent.y, z, tm: parentTm.id};
   }
 
   private _getTms(viewport: CRSViewportLike): NormalizedTileMatrixSet {
     const raw = (this.opts as CRSTileset2DProps).tileMatrixSet;
-    if (!this._tms || raw !== this._rawTms) {
+    const code = viewport.crs.code;
+    if (!this._tms || raw !== this._rawTms || code !== this._crsCode) {
+      // Flush tiles whose metadata (bbox/boundsCommon) and cellSize normalization were
+      // computed under a different CRS — they are meaningless after a MapView.crs swap
+      if (this._tms && code !== this._crsCode) {
+        this.finalize();
+      }
       const metersPerUnit = viewport.crs.units === 'degrees' ? METERS_PER_DEGREE : 1;
       this._tms = normalizeTileMatrixSet(raw, {metersPerUnit});
       this._rawTms = raw;
-      if (raw.crs && !this._crsWarned) {
+      this._crsCode = code;
+      if (raw.crs) {
         // Accept both 'EPSG:32618' and OGC URIs like 'http://www.opengis.net/def/crs/EPSG/0/32618'
-        const code = raw.crs.includes('/') ? `EPSG:${raw.crs.split('/').pop()}` : raw.crs;
-        if (code !== viewport.crs.code) {
-          log.warn(
-            `tileMatrixSet CRS (${raw.crs}) does not match the view CRS (${viewport.crs.code})`
-          )();
-          this._crsWarned = true;
+        const tmsCode = raw.crs.includes('/') ? `EPSG:${raw.crs.split('/').pop()}` : raw.crs;
+        if (tmsCode !== code) {
+          // Fires once per (tileMatrixSet, view CRS) combination
+          log.warn(`tileMatrixSet CRS (${raw.crs}) does not match the view CRS (${code})`)();
         }
       }
     }
@@ -162,7 +182,10 @@ export class CRSTileset2D extends Tileset2D {
   }
 
   /** View bounds in CRS units: forward-project the unprojected screen corners.
-   * Returns null when no corner projects to a finite position. */
+   * A screen corner can unproject outside the transform's domain (e.g. past the horizon
+   * at high pitch); such corners fall back to the CRS extent rather than silently
+   * shrinking the fetch area — matrix dimensions still bound the tile count.
+   * Returns null when the result is empty. */
   private _getViewBoundsCRS(viewport: CRSViewportLike, extentLngLat: Bounds | null): Bounds | null {
     const {width, height} = viewport;
     const corners = [
@@ -176,6 +199,7 @@ export class CRSTileset2D extends Tileset2D {
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
+    let hadNonFiniteCorner = false;
     for (const lnglat of corners) {
       const xy = viewport.crs.transform.forward([lnglat[0], lnglat[1]]);
       if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) {
@@ -183,7 +207,16 @@ export class CRSTileset2D extends Tileset2D {
         minY = Math.min(minY, xy[1]);
         maxX = Math.max(maxX, xy[0]);
         maxY = Math.max(maxY, xy[1]);
+      } else {
+        hadNonFiniteCorner = true;
       }
+    }
+    if (hadNonFiniteCorner) {
+      const [eMinX, eMinY, eMaxX, eMaxY] = viewport.crs.extent;
+      minX = Math.min(minX, eMinX);
+      minY = Math.min(minY, eMinY);
+      maxX = Math.max(maxX, eMaxX);
+      maxY = Math.max(maxY, eMaxY);
     }
     if (!Number.isFinite(minX)) {
       return null;
