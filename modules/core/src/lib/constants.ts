@@ -81,6 +81,12 @@ export const PROJECTION_MODE = {
   WEB_MERCATOR_AUTO_OFFSET: 4,
 
   /**
+   * Render geospatial data in a non-Web-Mercator CRS supplied via a CRSViewport.
+   * Positions are projected with a local affine approximation around the view center.
+   */
+  CRS: 5,
+
+  /**
    * No transformation
    */
   IDENTITY: 0
