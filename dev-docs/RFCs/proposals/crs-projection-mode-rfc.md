@@ -2,7 +2,7 @@
 
 * **Authors**: Adam
 * **Date**: July 2026
-* **Status**: **Draft**
+* Status: **Draft**
 
 Notes:
 * See discussion [#6216](https://github.com/visgl/deck.gl/discussions/6216) and issue [#6217](https://github.com/visgl/deck.gl/issues/6217)
