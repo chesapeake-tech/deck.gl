@@ -11,6 +11,7 @@ import {
   getTileIndicesInBounds,
   getTileIndexAtPoint
 } from './tile-matrix-set';
+import {selectPitchedBandTiles} from './pitched-lod';
 import type {TileMatrixSet, NormalizedTileMatrixSet} from './tile-matrix-set';
 import type {Bounds, TileIndex} from './types';
 
@@ -105,6 +106,25 @@ export class CRSTileset2D extends Tileset2D {
     if (!bounds) {
       return [];
     }
+
+    // Pitched view: pick per-region levels (far coarser, near finer) rather than filling the
+    // whole view AABB at the single view-center level `z`. The helper reuses the exact same
+    // `crs.transform.forward` as `_getViewBoundsCRS`, so a non-finite (horizon) corner makes it
+    // return null and we fall through to the unchanged single-level path — which keeps the
+    // extent-clamped fallback in `_getViewBoundsCRS`. minLevel is the flood-guard floor
+    // (`z` was already clamped up to minZoom above), maxLevel the view-center level.
+    const banded = selectPitchedBandTiles({
+      viewport: crsViewport,
+      tms,
+      forward: crsViewport.crs.transform.forward,
+      minLevel: Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+      maxLevel: z,
+      clipBounds: bounds
+    });
+    if (banded) {
+      return banded.map(({x, y, z: bz}) => ({x, y, z: bz, tm: tms.tileMatrices[bz].id}));
+    }
+
     const tm = tms.tileMatrices[z];
     return getTileIndicesInBounds(tm, bounds).map(({x, y}) => ({x, y, z, tm: tm.id}));
   }
