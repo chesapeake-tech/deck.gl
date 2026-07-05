@@ -158,6 +158,33 @@ Template URLs only cover image requests and there is no support for providing a 
 
 WMS services sometimes provide a mechanism to query a specific pixel. This is supported through the `getFeatureInfoText()` method on the `WMSLayer`
 
+### Rendering in a non-Mercator CRS view
+
+WMS is a best-case citizen for a [CRS view](../core/map-view.md#crs) (`MapView({crs})`): `GetMap` accepts an arbitrary `CRS`/`SRS` parameter and a bounding box expressed in that CRS's own units, with the *server* doing the reprojection. This lets the layer position the returned image as a single exact rectangle, rather than approximating it in longitude/latitude — the same principle Phase 2/3 use to position tile and mesh content exactly in a CRS view (see [`tileMatrixSet`](./tile-layer.md#tilematrixset)).
+
+```js
+import {Deck} from '@deck.gl/core';
+import {_WMSLayer as WMSLayer} from '@deck.gl/geo-layers';
+
+const layer = new WMSLayer({
+  data: 'https://example.com/wms',
+  serviceType: 'wms',
+  layers: ['my-layer'],
+  // srs: 'auto' (the default) also works here - it resolves to the view's crs.code
+  srs: 'EPSG:32618'
+});
+
+// rendered with a view in the same CRS:
+// new MapView({crs: 'EPSG:32618'}) // UTM zone 18N
+```
+
+When [`srs`](#srs) matches the view's `crs.code`, the layer:
+1. Computes the visible bounds directly in CRS units from the viewport's common-space corners (un-normalizing them through the CRS's extent offset and unit scale), rather than round-tripping every corner through the CRS's forward/inverse projection formulas — this avoids extra floating-point rounding from transcendental terms (e.g. UTM's trig/log expressions) and is both more exact and cheaper than projecting `getBounds()`'s LNGLAT corners back into CRS units.
+2. Requests that bbox from the WMS server with `crs`/`CRS` set to `srs`.
+3. Positions the returned image as an exact CRS-unit rectangle in deck's common space, using `COORDINATE_SYSTEM.CARTESIAN` and the same extent-offset normalization as `boundsCommon` (see [`tileMatrixSet`](./tile-layer.md#tilematrixset)).
+
+**WMS 1.1.1 vs. 1.3.0 axis order:** WMS 1.3.0 uses the CRS authority's defined axis order for the bbox, which for most projected CRSs (UTM zones, Web Mercator, etc.) is still `x,y` (easting, northing) — the same order as 1.1.1 — but for geographic CRSs like `EPSG:4326` is `lat,lon`. This layer relies on `@loaders.gl/wms`'s `WMSSource`, which already flips the bbox coordinate order for `'EPSG:4326'` under 1.3.0 (unless `substituteCRS84` is used); this layer does not duplicate or override that logic. Because CRS views in deck.gl are intended for **projected** CRSs, this is sufficient for the layer's CRS-view codepath. If you configure a CRS view with a *geographic* CRS other than `EPSG:4326` (e.g. `EPSG:4269`), be aware `@loaders.gl/wms` does not flip its bbox axis order under WMS 1.3.0 — check your service's actual axis order before relying on `srs` auto-matching in that case.
+
 ## Methods
 
 #### `getFeatureInfoText` {#getfeatureinfotext}
@@ -213,9 +240,13 @@ Specifies names of layers that should be visualized from the image service.
 
 - Default: `'auto'`
 
-Spatial Reference System for map output, used to query image from the server. Can be one of `EPSG:4326'`, `'EPSG:3857'` or `'auto'`. 
+Spatial Reference System for map output, used to query the image from the server (the WMS `CRS`/`SRS` `GetMap` parameter). Accepts any CRS code the WMS service advertises in its `GetCapabilities` (this is not validated by the layer) — commonly `'EPSG:4326'` or `'EPSG:3857'`, but also e.g. a UTM zone code such as `'EPSG:32618'` when rendering into a matching [CRS view](#rendering-in-a-non-mercator-crs-view).
 
-If `'auto'`, the layer will request `EPSG:3857` in `MapView`, and `EPSG:4326` otherwise. Note that a particular SRS may not be supported by your image server.
+If `'auto'`:
+- Outside a CRS view, the layer requests `'EPSG:3857'` in `MapView`, and `'EPSG:4326'` otherwise (unchanged from previous releases).
+- Inside a [CRS view](#rendering-in-a-non-mercator-crs-view) (`MapView({crs})`), the layer requests the view's own `crs.code`.
+
+In a CRS view, `srs` should match the view's `crs.code`. The layer positions the returned image as an exact rectangle in the view's CRS, so a mismatch means the WMS server projects the image into a *different* CRS than the one the view renders, which the layer cannot position exactly. When a mismatch is detected, a warning is logged once and the image falls back to being positioned via its (approximate) LNGLAT bounds, the same as a Mercator/4326 view.
 
 
 ### Callbacks
@@ -278,6 +309,7 @@ Receives arguments:
 - Each instance of the `WMSLayer` only supports being rendered in one view. See [rendering layers in multiple views](../../developer-guide/views.md#rendering-layers-in-multiple-views) for a workaround.
 - This layer currently does not work well with perspective views (i.e. `pitch>0`).
 - This layer does not work with non-geospatial views such as the [OrthographicView](../core/orthographic-view.md) or the [OrbitView](../core/orbit-view.md).
+- In a [CRS view](#rendering-in-a-non-mercator-crs-view), exact positioning only applies when [`srs`](#srs) matches the view's `crs.code`; a mismatched `srs` falls back to the pre-existing LNGLAT-bounds approximation.
 
 ## Source
 

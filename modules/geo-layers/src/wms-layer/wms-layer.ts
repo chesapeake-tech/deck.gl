@@ -16,24 +16,49 @@ import {
   UpdateParameters,
   DefaultProps,
   Viewport,
+  CoordinateSystem,
   COORDINATE_SYSTEM,
+  log,
   _deepEqual as deepEqual
 } from '@deck.gl/core';
 import {BitmapLayer} from '@deck.gl/layers';
 import type {GetImageParameters, ImageSourceMetadata, ImageType} from '@loaders.gl/loader-utils';
 import {createDataSource} from '@loaders.gl/core';
 import {ImageSource, WMSSource} from '@loaders.gl/wms';
-import {WGS84ToPseudoMercator} from './utils';
+import {WGS84ToPseudoMercator, getCRSViewBoundsInCRSUnits, crsUnitsToCommonBounds} from './utils';
+import type {WMSCRSViewportLike} from './utils';
 
 /** All props supported by the TileLayer */
 export type WMSLayerProps = CompositeLayerProps & _WMSLayerProps;
+
+/** A viewport with CRS information (duck-typed to avoid a hard dependency on `_CRSViewport`,
+ * matching the convention in `crs-tileset-2d.ts`/`mercator-crs-tileset-2d.ts`). */
+type CRSViewportLike = Viewport & WMSCRSViewportLike;
 
 /** Props added by the TileLayer */
 type _WMSLayerProps = {
   data: string | ImageSource;
   serviceType?: 'wms' | 'auto';
   layers?: string[];
-  srs?: 'EPSG:4326' | 'EPSG:3857' | 'auto';
+  /**
+   * The CRS/SRS to request from the WMS server, and the coordinate system its
+   * `GetMap` bbox is expressed in.
+   *
+   * Must be a CRS the WMS service advertises in its `GetCapabilities` (this is not
+   * validated). In a CRS view (`MapView({crs})`), this should also match the view's
+   * `crs.code` — the layer positions the returned image as an exact rectangle in the
+   * view's CRS, so a mismatch means the server projects the image into a *different*
+   * CRS than the one the view renders, which this layer cannot position exactly. When
+   * a mismatch is detected, a warning is logged once and the image falls back to being
+   * positioned via its (approximate) LNGLAT bounds, as it always was for Mercator/4326
+   * views.
+   *
+   * `'auto'` (default) resolves to `'EPSG:4326'`/`'EPSG:3857'` outside a CRS view (as
+   * before), and to the view's `crs.code` inside one.
+   *
+   * @default 'auto'
+   */
+  srs?: string;
   onMetadataLoad?: (metadata: ImageSourceMetadata) => void;
   onMetadataLoadError?: (error: Error) => void;
   onImageLoadStart?: (requestId: unknown) => void;
@@ -73,10 +98,15 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
     imageSource: ImageSource;
     image: ImageType;
     bounds: [number, number, number, number];
+    /** Set when `bounds` is an exact CRS-unit rectangle in common space (a CRS view whose
+     * `srs` matches `viewport.crs.code`); passed through as the sublayer's own
+     * `coordinateSystem` so its geometry bypasses the LNGLAT projection pipeline. Left
+     * `undefined` for the pre-existing Mercator/4326 behavior (bounds in LNGLAT). */
+    boundsCoordinateSystem?: CoordinateSystem;
     lastRequestParameters: {
       bbox: [number, number, number, number];
       layers: string[];
-      srs: 'EPSG:4326' | 'EPSG:3857';
+      srs: string;
       width: number;
       height: number;
     };
@@ -85,6 +115,9 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
     /** TODO: Change any => setTimeout return type. Different between Node and browser... */
     _timeoutId: any;
     loadCounter: number;
+    /** Last `srs`/view-crs mismatch combo warned about, so panning/zooming a CRS view
+     * with a deliberately-mismatched `srs` doesn't spam a warning on every frame. */
+    _lastSrsMismatchWarned?: string;
   };
 
   /** Returns true if all async resources are loaded */
@@ -128,16 +161,24 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
   override renderLayers(): Layer {
     // TODO - which bitmap layer is rendered should depend on the current viewport
     // Currently Studio only uses one viewport
-    const {bounds, image, lastRequestParameters} = this.state;
+    const {bounds, image, lastRequestParameters, boundsCoordinateSystem} = this.state;
 
     return (
       image &&
       new BitmapLayer({
         ...this.getSubLayerProps({id: 'bitmap'}),
+        // Preserved exactly as before for the Mercator/4326 path (`bounds` in LNGLAT).
+        // In the CRS path (`boundsCoordinateSystem` set below) this also evaluates to
+        // CARTESIAN, which is what we want: `bounds` is already an exact CRS-unit
+        // rectangle in common space, linear in both the image's own pixel space and
+        // (by construction) common space, so no further coordinate conversion applies.
         _imageCoordinateSystem:
           lastRequestParameters.srs === 'EPSG:4326'
             ? COORDINATE_SYSTEM.LNGLAT
             : COORDINATE_SYSTEM.CARTESIAN,
+        // Only set in the CRS path; otherwise inherit the default (LNGLAT for a
+        // geospatial viewport), matching pre-existing behavior exactly.
+        ...(boundsCoordinateSystem !== undefined ? {coordinateSystem: boundsCoordinateSystem} : {}),
         bounds,
         image
       })
@@ -204,29 +245,26 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
       return;
     }
 
-    const bounds = viewport.getBounds();
     const {width, height} = viewport;
     const requestId = this.getRequestId();
-    let {srs} = this.props;
-    if (srs === 'auto') {
-      // BitmapLayer only supports LNGLAT or CARTESIAN (Web-Mercator)
-      srs = viewport.resolution ? 'EPSG:4326' : 'EPSG:3857';
-    }
+    const crsViewport = viewport as CRSViewportLike;
+    const isCRSView = Boolean(crsViewport.crs);
+
+    const srs = this._resolveSrs(viewport, crsViewport, isCRSView);
+    const {bounds, boundingBox, boundsCoordinateSystem} = this._getRequestBounds(
+      viewport,
+      crsViewport,
+      isCRSView && srs === crsViewport.crs?.code,
+      srs
+    );
+
     const requestParams: GetImageParameters = {
       width,
       height,
-      boundingBox: [
-        [bounds[0], bounds[1]],
-        [bounds[2], bounds[3]]
-      ],
+      boundingBox,
       layers,
       crs: srs
     };
-    if (srs === 'EPSG:3857') {
-      const min = WGS84ToPseudoMercator([bounds[0], bounds[1]]);
-      const max = WGS84ToPseudoMercator([bounds[2], bounds[3]]);
-      requestParams.boundingBox = [min, max];
-    }
 
     try {
       this.state.loadCounter++;
@@ -241,6 +279,7 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
         this.setState({
           image,
           bounds,
+          boundsCoordinateSystem,
           lastRequestParameters: requestParams,
           lastRequestId: requestId
         });
@@ -254,6 +293,81 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
   }
 
   // HELPERS
+
+  /** Resolves `props.srs` against the current viewport: `'auto'` picks a sensible default
+   * (the view CRS inside a CRS view, EPSG:3857/4326 otherwise); an explicit `srs` that
+   * doesn't match a CRS view's `crs.code` is passed through unchanged, with a one-time
+   * warning (see `useExactCRSBounds` in `_getRequestBounds`). */
+  private _resolveSrs(
+    viewport: Viewport,
+    crsViewport: CRSViewportLike,
+    isCRSView: boolean
+  ): string {
+    const {srs} = this.props;
+    if (!isCRSView) {
+      // BitmapLayer only supports LNGLAT or CARTESIAN (Web-Mercator)
+      return srs === 'auto' ? (viewport.resolution ? 'EPSG:4326' : 'EPSG:3857') : srs;
+    }
+    if (srs === 'auto') {
+      return crsViewport.crs.code;
+    }
+    if (srs !== crsViewport.crs.code) {
+      const mismatchKey = `${srs}|${crsViewport.crs.code}`;
+      if (this.state._lastSrsMismatchWarned !== mismatchKey) {
+        this.state._lastSrsMismatchWarned = mismatchKey;
+        log.warn(
+          `WMSLayer: srs "${srs}" does not match the view CRS "${crsViewport.crs.code}". ` +
+            'The WMS server will project the requested image into a different CRS than ' +
+            'the view renders, so it cannot be positioned as an exact rectangle; falling ' +
+            'back to its (approximate) LNGLAT bounds.'
+        )();
+      }
+    }
+    return srs;
+  }
+
+  /**
+   * WMS is the best-case CRS citizen: `GetMap` accepts an arbitrary CRS and a bbox in that
+   * CRS's units, with the server doing the reprojection — so when `useExactCRSBounds` (a
+   * CRS view whose resolved `srs` matches the view CRS), request the bbox in CRS units and
+   * position the resulting image as an exact CRS-unit rectangle in common space, the same
+   * way Phase 2/3 position tile/mesh content (see `boundsCommon` in `crs-tileset-2d.ts`).
+   * Otherwise, preserves the pre-existing LNGLAT/pseudo-Mercator bounds behavior exactly.
+   */
+  private _getRequestBounds(
+    viewport: Viewport,
+    crsViewport: CRSViewportLike,
+    useExactCRSBounds: boolean,
+    srs: string
+  ): {
+    bounds: [number, number, number, number];
+    boundingBox: GetImageParameters['boundingBox'];
+    boundsCoordinateSystem: CoordinateSystem | undefined;
+  } {
+    if (useExactCRSBounds) {
+      const boundsCRS = getCRSViewBoundsInCRSUnits(crsViewport);
+      return {
+        bounds: crsUnitsToCommonBounds(boundsCRS, crsViewport.crs),
+        boundingBox: [
+          [boundsCRS[0], boundsCRS[1]],
+          [boundsCRS[2], boundsCRS[3]]
+        ],
+        boundsCoordinateSystem: COORDINATE_SYSTEM.CARTESIAN
+      };
+    }
+
+    const lngLatBounds = viewport.getBounds();
+    let boundingBox: GetImageParameters['boundingBox'] = [
+      [lngLatBounds[0], lngLatBounds[1]],
+      [lngLatBounds[2], lngLatBounds[3]]
+    ];
+    if (srs === 'EPSG:3857') {
+      const min = WGS84ToPseudoMercator([lngLatBounds[0], lngLatBounds[1]]);
+      const max = WGS84ToPseudoMercator([lngLatBounds[2], lngLatBounds[3]]);
+      boundingBox = [min, max];
+    }
+    return {bounds: lngLatBounds, boundingBox, boundsCoordinateSystem: undefined};
+  }
 
   /** Global counter for issuing unique request ids */
   private getRequestId(): number {
