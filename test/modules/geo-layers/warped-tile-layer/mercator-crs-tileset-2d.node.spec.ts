@@ -6,7 +6,12 @@ import {test, expect} from 'vitest';
 import {_CRSViewport as CRSViewport} from '@deck.gl/core';
 import {lngLatToWorld} from '@math.gl/web-mercator';
 import {MercatorCRSTileset2D} from '@deck.gl/geo-layers/warped-tile-layer/mercator-crs-tileset-2d';
-import {selectMercatorSourceZoom} from '@deck.gl/geo-layers/warped-tile-layer/warp-mesh';
+import {
+  selectMercatorSourceZoom,
+  makeWebMercatorQuadTms,
+  MAX_MERCATOR_LATITUDE
+} from '@deck.gl/geo-layers/warped-tile-layer/warp-mesh';
+import {getTileIndicesInBounds} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {osmTile2lngLat} from '@deck.gl/geo-layers/tileset-2d/utils';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
 
@@ -40,6 +45,116 @@ test('MercatorCRSTileset2D#selects the ground-resolution-matched OSM level', () 
     expect(bbox.south).toBeLessThan(north);
     expect(bbox.north).toBeGreaterThan(south);
   }
+});
+
+function getIndices(tileset: MercatorCRSTileset2D, viewport: CRSViewport) {
+  return tileset.getTileIndices({
+    viewport: viewport as any,
+    minZoom: undefined,
+    maxZoom: undefined,
+    zRange: null
+  });
+}
+
+test('MercatorCRSTileset2D#pitched view selects per-region LOD (far coarser, near finer)', () => {
+  const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256});
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 7,
+    pitch: 65
+  });
+  const indices = getIndices(tileset, viewport);
+  const zs = indices.map(i => i.z);
+  const levels = [...new Set(zs)].sort((a, b) => a - b);
+  // Known answer: three levels span the pitched frustum, far field two levels coarser than near
+  expect(levels).toEqual([12, 13, 14]);
+  expect(Math.min(...zs)).toBe(12); // far band
+  expect(Math.max(...zs)).toBe(14); // near band == the single view-center level
+  expect(indices.length).toBe(40);
+
+  // The pre-change behavior filled the whole view AABB at the single view-center level.
+  // Reconstruct that count and confirm the banded selection is far below it.
+  const z = selectMercatorSourceZoom(viewport, 256);
+  expect(z).toBe(14);
+  const corners = [
+    [0, 0],
+    [viewport.width, 0],
+    [0, viewport.height],
+    [viewport.width, viewport.height]
+  ].map(p => viewport.unproject(p));
+  let a = Infinity;
+  let b = Infinity;
+  let c = -Infinity;
+  let d = -Infinity;
+  for (const ll of corners) {
+    const [wx, wy] = lngLatToWorld([
+      Math.min(Math.max(ll[0], -180), 180),
+      Math.min(Math.max(ll[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
+    ]);
+    a = Math.min(a, wx);
+    b = Math.min(b, wy);
+    c = Math.max(c, wx);
+    d = Math.max(d, wy);
+  }
+  const singleLevel = getTileIndicesInBounds(makeWebMercatorQuadTms(256, 23).tileMatrices[z], [
+    a,
+    b,
+    c,
+    d
+  ]).length;
+  expect(singleLevel).toBe(272);
+  expect(indices.length).toBeLessThan(singleLevel * 0.2);
+});
+
+test('MercatorCRSTileset2D#unpitched view is byte-identical to the single-level path', () => {
+  const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256});
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 7,
+    pitch: 0
+  });
+  const indices = getIndices(tileset, viewport);
+  // exactly one level (the view-center level), matching pre-change single-level behavior
+  expect(new Set(indices.map(i => i.z))).toEqual(
+    new Set([selectMercatorSourceZoom(viewport, 256)])
+  );
+  // and it equals a direct single-level fill of the view AABB
+  const corners = [
+    [0, 0],
+    [viewport.width, 0],
+    [0, viewport.height],
+    [viewport.width, viewport.height]
+  ].map(p => viewport.unproject(p));
+  let a = Infinity;
+  let b = Infinity;
+  let c = -Infinity;
+  let d = -Infinity;
+  for (const ll of corners) {
+    const [wx, wy] = lngLatToWorld([
+      Math.min(Math.max(ll[0], -180), 180),
+      Math.min(Math.max(ll[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
+    ]);
+    a = Math.min(a, wx);
+    b = Math.min(b, wy);
+    c = Math.max(c, wx);
+    d = Math.max(d, wy);
+  }
+  const z = selectMercatorSourceZoom(viewport, 256);
+  const expected = getTileIndicesInBounds(makeWebMercatorQuadTms(256, 23).tileMatrices[z], [
+    a,
+    b,
+    c,
+    d
+  ]).map(({x, y}) => ({x, y, z}));
+  expect(indices).toEqual(expected);
 });
 
 test('MercatorCRSTileset2D#metadata: exact OSM bbox and world-unit bounds', () => {

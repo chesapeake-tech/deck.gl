@@ -8,6 +8,7 @@ import {Tileset2D, Tileset2DProps} from '../tileset-2d/tileset-2d';
 import {getTileBoundsCRS, getTileIndicesInBounds} from '../tileset-2d/tile-matrix-set';
 import type {NormalizedTileMatrixSet} from '../tileset-2d/tile-matrix-set';
 import type {Bounds, TileIndex} from '../tileset-2d/types';
+import {selectPitchedBandTiles} from '../tileset-2d/pitched-lod';
 import {makeWebMercatorQuadTms, selectMercatorSourceZoom, MAX_MERCATOR_LATITUDE} from './warp-mesh';
 import type {WarpTargetCRS} from './warp-mesh';
 
@@ -104,6 +105,31 @@ export class MercatorCRSTileset2D extends Tileset2D {
         )();
       }
     }
+    if (!boundsResult.unbounded) {
+      // Pitched view: fetch far tiles coarser and near tiles finer instead of filling the
+      // whole view AABB at the single view-center level `z`. Only the finite-corner case is
+      // banded; the unbounded fallback above keeps its whole-world + capped-z behavior.
+      // `forward` clamps lnglat into the Mercator domain exactly as `_getViewBoundsWorld` does,
+      // so band footprints and the single-level bounds are computed the same way.
+      const banded = selectPitchedBandTiles({
+        viewport: crsViewport,
+        tms: this._tms,
+        forward: (lnglat: [number, number]) =>
+          lngLatToWorld([
+            Math.min(Math.max(lnglat[0], -180), 180),
+            Math.min(Math.max(lnglat[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
+          ]),
+        // Never finer than the view-center level (near band is closer, but fetching finer than
+        // the unpitched path would defeats the point); far bands clamp to the flood-guard floor.
+        minLevel: Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+        maxLevel: z,
+        clipBounds: boundsResult.bounds
+      });
+      if (banded) {
+        return banded;
+      }
+    }
+
     return getTileIndicesInBounds(this._tms.tileMatrices[z], boundsResult.bounds).map(({x, y}) => ({
       x,
       y,
