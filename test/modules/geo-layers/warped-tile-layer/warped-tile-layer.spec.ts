@@ -59,6 +59,18 @@ test('WarpedTileLayer#renders SimpleMeshLayer sublayers in a UTM view', async ()
           // memoized: the mesh is cached on the tile
           const tile = layer.state.tileset.selectedTiles[0];
           expect(tile.userData?.warpedMesh).toBeDefined();
+          // Cache key composition: now that the grid size is data-dependent ('auto'), the key
+          // must include the resolved size (and tileSize) so a zoom/tile that resolves to a
+          // different size cannot reuse a stale mesh. Key shape: `${crs.code}/${N}/${tileSize}`.
+          const key = tile.userData.warpedMesh.key as string;
+          const [code, nStr, sizeStr] = key.split('/');
+          expect(code).toBe('EPSG:32618');
+          expect([4, 8, 16, 32]).toContain(Number(nStr));
+          expect(Number(sizeStr)).toBe(256); // the layer's tileSize prop (default)
+          // the cached mesh's own vertex count matches the resolved size in the key (no collision)
+          const resolvedN = Number(nStr);
+          const cachedPositions = tile.userData.warpedMesh.mesh.attributes.positions.value;
+          expect(cachedPositions.length).toBe((resolvedN + 1) * (resolvedN + 1) * 3);
         }
       }
     }

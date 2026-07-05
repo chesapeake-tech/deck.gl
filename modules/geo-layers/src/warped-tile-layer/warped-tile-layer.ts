@@ -8,7 +8,7 @@ import type {TileLayerProps} from '../tile-layer/tile-layer';
 import TileLayer from '../tile-layer/tile-layer';
 import type {Tile2DHeader} from '../tileset-2d/index';
 import {MercatorCRSTileset2D} from './mercator-crs-tileset-2d';
-import {buildWarpedTileMesh} from './warp-mesh';
+import {buildWarpedTileMesh, estimateWarpMeshResolution} from './warp-mesh';
 import type {WarpTargetCRS, WarpedTileMesh} from './warp-mesh';
 
 /** Props `renderSubLayers` receives: the usual `TileLayer` sublayer props (including `tile`,
@@ -41,7 +41,7 @@ const defaultProps: DefaultProps<WarpedTileLayerProps> = {
   TilesetClass: MercatorCRSTileset2D,
   tileSize: 256,
   maxZoom: 19,
-  _meshResolution: 16,
+  _meshResolution: 'auto',
   renderSubLayers: {
     type: 'function',
     value: (props: WarpedTileLayerRenderSubLayersProps) => {
@@ -70,9 +70,10 @@ export type WarpedTileLayerProps<DataT = unknown> = Omit<
   TileLayerProps<DataT>,
   'renderSubLayers'
 > & {
-  /** Warp grid cells per tile edge. Higher is more accurate for strongly curved CRSs.
-   * The default is sub-pixel for UTM-class CRSs at any usable zoom. @default 16 */
-  _meshResolution?: number;
+  /** Warp grid cells per tile edge. A fixed number forces that resolution; `'auto'` (the
+   * default) picks one per tile from its measured distortion, holding a ≤0.15 px interpolation
+   * bound (from {4, 8, 16, 32}). Set a number only to override the adaptive choice. @default 'auto' */
+  _meshResolution?: number | 'auto';
   /**
    * Renders one or an array of Layer instances for a tile. Receives the tile's warped
    * mesh and common-space origin in addition to the usual `TileLayer` sublayer props
@@ -91,7 +92,7 @@ export default class WarpedTileLayer<DataT = any, ExtraPropsT extends {} = {}> e
   DataT,
   ExtraPropsT &
     Required<{
-      _meshResolution?: number;
+      _meshResolution?: number | 'auto';
       renderSubLayers?: (
         props: WarpedTileLayerRenderSubLayersProps<DataT>
       ) => Layer | null | LayersList;
@@ -113,8 +114,7 @@ export default class WarpedTileLayer<DataT = any, ExtraPropsT extends {} = {}> e
       return null;
     }
     const {tile} = props;
-    const resolution = this.props._meshResolution;
-    const mesh = this._getWarpedMesh(tile, crs, resolution);
+    const mesh = this._getWarpedMesh(tile, crs);
     const propsWithMesh: WarpedTileLayerRenderSubLayersProps<DataT> = {
       ...props,
       mesh: {attributes: mesh.attributes, indices: mesh.indices},
@@ -126,22 +126,28 @@ export default class WarpedTileLayer<DataT = any, ExtraPropsT extends {} = {}> e
     return this.props.renderSubLayers(propsWithMesh);
   }
 
-  private _getWarpedMesh(
-    tile: Tile2DHeader<DataT>,
-    crs: WarpTargetCRS,
-    resolution: number
-  ): WarpedTileMesh {
-    const key = `${crs.code}/${resolution}`;
+  private _getWarpedMesh(tile: Tile2DHeader<DataT>, crs: WarpTargetCRS): WarpedTileMesh {
+    const boundsWorld = (tile as any).boundsWorld as [number, number, number, number];
+    const {tileSize} = this.props;
+    // Resolve the grid size: an explicit `_meshResolution` number forces it; `'auto'` picks it
+    // from this tile's distortion at the current view scale (pixels per common unit = 2^zoom).
+    const requested = this.props._meshResolution;
+    const resolution =
+      typeof requested === 'number'
+        ? requested
+        : estimateWarpMeshResolution(boundsWorld, crs, this.context.viewport.scale);
+
+    // Cache key covers every input the mesh geometry/UVs depend on: view CRS (flushes on a CRS
+    // swap), the resolved grid size (data-dependent under 'auto' — two tiles or two zooms that
+    // resolve to different N must not share a mesh), and the source tileSize (UV inset width).
+    // The tile's own geometry is fixed by its identity, so it needn't be in the key.
+    const key = `${crs.code}/${resolution}/${tileSize}`;
     tile.userData = tile.userData || {};
     const cached = tile.userData.warpedMesh as {key: string; mesh: WarpedTileMesh} | undefined;
     if (cached && cached.key === key) {
       return cached.mesh;
     }
-    const mesh = buildWarpedTileMesh(
-      (tile as any).boundsWorld as [number, number, number, number],
-      crs,
-      resolution
-    );
+    const mesh = buildWarpedTileMesh(boundsWorld, crs, resolution, {tileSize});
     tile.userData.warpedMesh = {key, mesh};
     return mesh;
   }
