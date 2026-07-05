@@ -192,13 +192,14 @@ export class CRSTileset2D extends Tileset2D {
       this._tms = normalizeTileMatrixSet(raw, {metersPerUnit});
       this._rawTms = raw;
       this._crsCode = code;
-      if (raw.crs) {
-        // Accept both 'EPSG:32618' and OGC URIs like 'http://www.opengis.net/def/crs/EPSG/0/32618'
-        const tmsCode = raw.crs.includes('/') ? `EPSG:${raw.crs.split('/').pop()}` : raw.crs;
-        if (tmsCode !== code) {
-          // Fires once per (tileMatrixSet, view CRS) combination
-          log.warn(`tileMatrixSet CRS (${raw.crs}) does not match the view CRS (${code})`)();
-        }
+      if (this._tms.crs && this._tms.crs !== code) {
+        // this._tms.crs is already normalized (via normalizeCrsCode) to a plain 'AUTHORITY:CODE'
+        // string, regardless of whether raw.crs was a plain code, an OGC CRS URI/URN, or a TMS
+        // 2.0 {uri} object. Display the original raw.crs so the warning matches what the caller
+        // actually passed in.
+        const rawCrsDisplay = typeof raw.crs === 'string' ? raw.crs : JSON.stringify(raw.crs);
+        // Fires once per (tileMatrixSet, view CRS) combination
+        log.warn(`tileMatrixSet CRS (${rawCrsDisplay}) does not match the view CRS (${code})`)();
       }
     }
     return this._tms;
