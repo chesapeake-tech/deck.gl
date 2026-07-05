@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
+import log from '../utils/log';
+
 /** Width of the common-space world at zoom 0. Matches Web Mercator's world size. */
 export const CRS_WORLD_SIZE = 512;
 
@@ -35,18 +37,91 @@ export type CRSDefinition = {
   /** Identifier, e.g. 'EPSG:32618'. Used for viewport equality checks and debugging. */
   code: string;
   transform: CRSTransform;
-  /** [minX, minY, maxX, maxY] valid bounds in CRS units. Defines the common-space world scale. */
-  extent: [number, number, number, number];
+  /** [minX, minY, maxX, maxY] valid bounds in CRS units. Defines the common-space world scale.
+   * Exactly one of `extent`/`extentGeographic` must be provided; if both are given, `extent`
+   * is used and `extentGeographic` is ignored. */
+  extent?: [number, number, number, number];
+  /** [west, south, east, north] valid bounds in WGS84 degrees - a convenience for CRSs (e.g. a
+   * single UTM zone) where a geographic bbox is at hand but the projected `extent` is not.
+   * Derived into a projected extent by densifying the boundary (~8 samples per edge) through
+   * `transform.forward` and taking the bounding box of the finite results. This is an
+   * approximation of the true (possibly curved) projected boundary - most accurate for the
+   * roughly-rectangular boundaries typical of UTM-class zones, and not a substitute for an
+   * exact `extent` when one is available. Ignored if `extent` is also provided. */
+  extentGeographic?: [number, number, number, number];
   /** CRS axis unit. Relates elevation (meters) and distance scales to CRS units. Default 'meters'. */
   units?: 'meters' | 'degrees';
 };
 
-/** CRSDefinition with `units` defaulted (no longer optional) and its derived world scale. */
+/** CRSDefinition with `units` defaulted (no longer optional), `extent` resolved (no longer
+ * optional, and no longer alongside `extentGeographic`), and its derived world scale. */
 export type NormalizedCRS = CRSDefinition & {
+  /** [minX, minY, maxX, maxY] valid bounds in CRS units - explicit, or derived from
+   * `extentGeographic` by `normalizeCRS`. */
+  extent: [number, number, number, number];
   units: 'meters' | 'degrees';
   /** Common units per CRS unit: CRS_WORLD_SIZE / extent width */
   commonUnitsPerCRSUnit: number;
 };
+
+/** Samples per boundary edge when deriving a projected extent from `extentGeographic`.
+ * Dense enough to bound the curvature of typical projections without materially over- or
+ * under-shooting the true curved boundary for UTM-class zones (see crs-utils.node.spec.ts
+ * for the ~1% tolerance this achieves against a known UTM 18N extent). */
+const EXTENT_GEOGRAPHIC_SAMPLES = 8;
+
+/** Derive a projected [minX, minY, maxX, maxY] extent from a WGS84 [west, south, east, north]
+ * bbox: densify the boundary and take the bbox of the finite `transform.forward` results.
+ * Throws if fewer than 4 samples are finite (the CRS's domain likely doesn't cover this
+ * geographic bbox) or if the resulting bbox is degenerate. */
+function deriveExtentFromGeographic(
+  code: string,
+  transform: CRSTransform,
+  extentGeographic: [number, number, number, number]
+): [number, number, number, number] {
+  const [west, south, east, north] = extentGeographic;
+  const n = EXTENT_GEOGRAPHIC_SAMPLES;
+  const boundary: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const lng = west + t * (east - west);
+    const lat = south + t * (north - south);
+    boundary.push([lng, north]); // top edge
+    boundary.push([lng, south]); // bottom edge
+    boundary.push([west, lat]); // left edge
+    boundary.push([east, lat]); // right edge
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let finiteCount = 0;
+  for (const lnglat of boundary) {
+    const xy = transform.forward(lnglat);
+    if (isFinite2(xy)) {
+      finiteCount++;
+      minX = Math.min(minX, xy[0]);
+      minY = Math.min(minY, xy[1]);
+      maxX = Math.max(maxX, xy[0]);
+      maxY = Math.max(maxY, xy[1]);
+    }
+  }
+  if (finiteCount < 4) {
+    throw new Error(
+      `CRS ${code}: extentGeographic [${extentGeographic}] produced fewer than 4 finite samples ` +
+        `when transformed with transform.forward - the CRS's domain likely does not cover this ` +
+        `geographic bbox`
+    );
+  }
+  if (!(maxX > minX) || !(maxY > minY)) {
+    throw new Error(
+      `CRS ${code}: extentGeographic [${extentGeographic}] produced a degenerate projected extent ` +
+        `[${minX}, ${minY}, ${maxX}, ${maxY}]`
+    );
+  }
+  return [minX, minY, maxX, maxY];
+}
 
 const EPSG_4326: CRSDefinition = {
   code: 'EPSG:4326',
@@ -72,7 +147,15 @@ export function normalizeCRS(crs: CRSDefinition | string): NormalizedCRS {
     definition = crs;
   }
 
-  const {code, transform, extent, units = 'meters'} = definition;
+  const {code, transform, extent: explicitExtent, extentGeographic, units = 'meters'} = definition;
+  if (explicitExtent && extentGeographic) {
+    log.warn(
+      `CRS ${code}: both extent and extentGeographic were provided; extent takes precedence`
+    )();
+  }
+  const extent =
+    explicitExtent ??
+    (extentGeographic && deriveExtentFromGeographic(code, transform, extentGeographic));
   if (!extent || !(extent[2] > extent[0]) || !(extent[3] > extent[1])) {
     throw new Error(`CRS ${code}: extent must be [minX, minY, maxX, maxY] with positive size`);
   }

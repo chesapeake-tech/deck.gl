@@ -67,6 +67,71 @@ test('normalizeCRS#invalid extent throws', () => {
   ).toThrow(/extent/);
 });
 
+test('normalizeCRS#extentGeographic derives the UTM 18N projected extent', () => {
+  // -78/-72 is the WGS84 lon extent of UTM zone 18; 0/84 is the equator-to-UTM's-northern-limit
+  // lat extent. Densifying the boundary and forward-projecting should land close to (but not
+  // necessarily exactly on, since edges are densified straight lines vs a truly curved
+  // boundary) the known projected bounds for this zone.
+  const {extent: _extent, ...definitionWithoutExtent} = UTM18N;
+  const crs = normalizeCRS({
+    ...definitionWithoutExtent,
+    extentGeographic: [-78, 0, -72, 84]
+  });
+  const known = [166021.44, 0, 833978.56, 9329005.18];
+  const widthX = known[2] - known[0];
+  const widthY = known[3] - known[1];
+  expect(Math.abs(crs.extent[0] - known[0])).toBeLessThan(widthX * 0.01);
+  expect(Math.abs(crs.extent[1] - known[1])).toBeLessThan(widthY * 0.01);
+  expect(Math.abs(crs.extent[2] - known[2])).toBeLessThan(widthX * 0.01);
+  expect(Math.abs(crs.extent[3] - known[3])).toBeLessThan(widthY * 0.01);
+});
+
+test('normalizeCRS#extentGeographic tolerates a forward that NaNs on part of the boundary', () => {
+  // A synthetic CRS whose forward is undefined above lat 60 (simulating a projection that's
+  // singular past some parallel, e.g. near a pole). The entire north edge (lat 70) and the
+  // last sample of the east/west edges are non-finite; the remaining >= 4 finite samples
+  // must still be enough to succeed, and the derived extent must reflect only those.
+  const partialCRS: CRSDefinition = {
+    code: 'TEST:PARTIAL',
+    transform: {
+      forward: ([lng, lat]) => (lat > 60 ? [NaN, NaN] : [lng * 1000, lat * 1000]),
+      inverse: ([x, y]) => [x / 1000, y / 1000]
+    },
+    extentGeographic: [-10, 0, 10, 70],
+    units: 'meters'
+  };
+  const crs = normalizeCRS(partialCRS);
+  expect(crs.extent).toEqual([-10000, 0, 10000, 60000]);
+});
+
+test('normalizeCRS#extentGeographic throws on a degenerate derived extent', () => {
+  const degenerateCRS: CRSDefinition = {
+    code: 'TEST:DEGENERATE',
+    transform: {
+      forward: ([lng, lat]) => [lng * 1000, lat * 1000],
+      inverse: ([x, y]) => [x / 1000, y / 1000]
+    },
+    // west === east: every boundary sample has the same x, so the derived extent is
+    // degenerate in X regardless of the y span
+    extentGeographic: [5, 10, 5, 50],
+    units: 'meters'
+  };
+  expect(() => normalizeCRS(degenerateCRS)).toThrow(/degenerate/);
+});
+
+test('normalizeCRS#extent takes precedence when both extent and extentGeographic are given', () => {
+  const crs = normalizeCRS({
+    ...UTM18N,
+    extentGeographic: [999, 999, 999.1, 999.1] // would throw if it were used
+  });
+  expect(crs.extent).toEqual(UTM18N.extent);
+});
+
+test('normalizeCRS#neither extent nor extentGeographic throws', () => {
+  const {extent: _extent, ...definitionWithoutExtent} = UTM18N;
+  expect(() => normalizeCRS(definitionWithoutExtent)).toThrow(/extent/);
+});
+
 test('lngLatToCommon#EPSG:4326', () => {
   const crs = normalizeCRS('EPSG:4326');
   expect(lngLatToCommon(crs, [0, 0])).toEqual([256, 128]);
