@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {Viewport} from '@deck.gl/core';
+import {log, Viewport} from '@deck.gl/core';
 import {lngLatToWorld, worldToLngLat} from '@math.gl/web-mercator';
 import {Tileset2D, Tileset2DProps} from '../tileset-2d/tileset-2d';
 import {getTileBoundsCRS, getTileIndicesInBounds} from '../tileset-2d/tile-matrix-set';
@@ -13,16 +13,23 @@ import type {WarpTargetCRS} from './warp-mesh';
 
 type CRSViewportLike = Viewport & {crs: WarpTargetCRS};
 
-/** OSM's deepest commonly served level */
+/** Number of source Web-Mercator pyramid levels to build (indices 0..22) — 22 is OSM's
+ * deepest commonly served level, so 23 levels covers it. */
 const MAX_SOURCE_LEVELS = 23;
+
+/** Fallback z cap when fewer than 2 view corners unproject finitely (e.g. the camera points
+ * near/above the horizon at a steep pitch). With no reliable corner bbox to bound the fetch,
+ * `_getViewBoundsWorld` widens to the whole Mercator world, so z must stay shallow here: 4^z
+ * tiles is 65536 at level 8, versus up to 4^19 if an unclamped deep z were kept. */
+const MAX_FALLBACK_SOURCE_ZOOM = 8;
 
 /** Indexes a Web-Mercator XYZ pyramid (OSM, Esri, ...) from a CRS view
  * (a `MapView` with a non-Mercator `crs`). Used by `_WarpedTileLayer`. */
 export class MercatorCRSTileset2D extends Tileset2D {
   private _tms: NormalizedTileMatrixSet | null = null;
   private _tmsTileSize: number | null = null;
-  private _crsViewport: CRSViewportLike | null = null;
   private _crsCode: string | null = null;
+  private _warnedUnboundedFallback = false;
 
   setOptions(opts: Tileset2DProps): void {
     // Same loop-safety policy as CRSTileset2D: getParentIndex returns the root
@@ -48,9 +55,7 @@ export class MercatorCRSTileset2D extends Tileset2D {
     // Note: finalize() drops tiles without firing onTileUnload (same caveat as CRSTileset2D)
     if (this._crsCode !== null && this._crsCode !== crsViewport.crs.code) {
       this.finalize();
-      this._tms = null;
     }
-    this._crsViewport = crsViewport;
     this._crsCode = crsViewport.crs.code;
 
     const {tileSize, zoomOffset, visibleMinZoom, visibleMaxZoom, extent} = this.opts;
@@ -61,6 +66,9 @@ export class MercatorCRSTileset2D extends Tileset2D {
       return [];
     }
     if (!this._tms || this._tmsTileSize !== tileSize) {
+      // The source Web-Mercator pyramid only depends on tileSize, not on the view's CRS
+      // (that's what makes this tileset able to warp the same pyramid into any CRS view),
+      // so a CRS swap above deliberately does not reset `_tms`.
       this._tms = makeWebMercatorQuadTms(tileSize, MAX_SOURCE_LEVELS);
       this._tmsTileSize = tileSize;
     }
@@ -79,11 +87,24 @@ export class MercatorCRSTileset2D extends Tileset2D {
     }
     z = Math.max(0, Math.min(z, this._tms.tileMatrices.length - 1));
 
-    const bounds = this._getViewBoundsWorld(crsViewport, (extent as Bounds | null) || null);
-    if (!bounds) {
+    const boundsResult = this._getViewBoundsWorld(crsViewport, (extent as Bounds | null) || null);
+    if (!boundsResult) {
       return [];
     }
-    return getTileIndicesInBounds(this._tms.tileMatrices[z], bounds).map(({x, y}) => ({
+    if (boundsResult.unbounded) {
+      // Fewer than 2 corners unprojected finitely: bounds is the whole-world safety net,
+      // so cap z or getTileIndicesInBounds could be asked to fill up to 4^z tiles
+      z = Math.min(z, MAX_FALLBACK_SOURCE_ZOOM);
+      if (!this._warnedUnboundedFallback) {
+        this._warnedUnboundedFallback = true;
+        log.warn(
+          '_WarpedTileLayer: fewer than 2 view corners unprojected to a finite lnglat (camera ' +
+            `likely pointed near/above the horizon) — falling back to a bounded z (${MAX_FALLBACK_SOURCE_ZOOM}) ` +
+            'instead of the whole-world bounds at the view-matched level'
+        )();
+      }
+    }
+    return getTileIndicesInBounds(this._tms.tileMatrices[z], boundsResult.bounds).map(({x, y}) => ({
       x,
       y,
       z
@@ -112,11 +133,13 @@ export class MercatorCRSTileset2D extends Tileset2D {
   }
 
   /** View bounds in 512-unit Mercator world coordinates. Latitudes are clamped to the
-   * Mercator domain; non-finite unprojections fall back to the world bounds. */
+   * Mercator domain. When at least 2 corners unproject finitely, their bbox is used as-is;
+   * with fewer, there's no reliable bbox, so bounds fall back to the whole world and
+   * `unbounded: true` tells the caller to also clamp z (see `MAX_FALLBACK_SOURCE_ZOOM`). */
   private _getViewBoundsWorld(
     viewport: CRSViewportLike,
     extentLngLat: Bounds | null
-  ): Bounds | null {
+  ): {bounds: Bounds; unbounded: boolean} | null {
     const {width, height} = viewport;
     const corners = [
       [0, 0],
@@ -129,9 +152,10 @@ export class MercatorCRSTileset2D extends Tileset2D {
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    let hadNonFiniteCorner = false;
+    let finiteCorners = 0;
     for (const lnglat of corners) {
       if (Number.isFinite(lnglat[0]) && Number.isFinite(lnglat[1])) {
+        finiteCorners++;
         const [wx, wy] = lngLatToWorld([
           Math.min(Math.max(lnglat[0], -180), 180),
           Math.min(Math.max(lnglat[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
@@ -140,11 +164,10 @@ export class MercatorCRSTileset2D extends Tileset2D {
         minY = Math.min(minY, wy);
         maxX = Math.max(maxX, wx);
         maxY = Math.max(maxY, wy);
-      } else {
-        hadNonFiniteCorner = true;
       }
     }
-    if (hadNonFiniteCorner) {
+    const unbounded = finiteCorners < 2;
+    if (unbounded) {
       minX = Math.min(minX, 0);
       minY = Math.min(minY, 0);
       maxX = Math.max(maxX, 512);
@@ -171,6 +194,6 @@ export class MercatorCRSTileset2D extends Tileset2D {
         return null;
       }
     }
-    return [minX, minY, maxX, maxY];
+    return {bounds: [minX, minY, maxX, maxY], unbounded};
   }
 }
