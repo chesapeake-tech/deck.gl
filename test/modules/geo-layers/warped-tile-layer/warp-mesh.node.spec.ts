@@ -279,6 +279,17 @@ test('MAX_MERCATOR_LATITUDE export', () => {
   expect(MAX_MERCATOR_LATITUDE).toBeCloseTo(85.051129, 6);
 });
 
+test('resolveWarpSource#sourceTileMatrixSet without sourceCrs throws (units are undefined)', () => {
+  // Silently treating a (e.g. meters-based) TMS as deck's 512-unit Mercator world would index
+  // garbage — the pairing rule is enforced in both directions.
+  expect(() => resolveWarpSource({tileSize: 512, sourceTileMatrixSet: GIBS_500M_TMS})).toThrow(
+    /sourceTileMatrixSet requires sourceCrs/
+  );
+  expect(() => resolveWarpSource({tileSize: 512, sourceCrs: 'EPSG:4326'})).toThrow(
+    /sourceTileMatrixSet is required/
+  );
+});
+
 test('resolveWarpSource#default is the built-in Web-Mercator source (byte-equivalent)', () => {
   const source = resolveWarpSource({tileSize: 256});
   expect(source.isMercator).toBe(true);

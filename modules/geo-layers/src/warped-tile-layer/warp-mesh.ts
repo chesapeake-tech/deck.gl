@@ -127,10 +127,18 @@ export function resolveWarpSource(options: {
   const {tileSize, sourceTileMatrixSet, sourceCrs} = options;
 
   if (!sourceCrs) {
+    if (sourceTileMatrixSet) {
+      // Without a sourceCrs there is no way to know what units the TMS is in — silently
+      // treating (say) a meters-based grid as deck's 512-unit Mercator world would index
+      // garbage. Fail loudly rather than document a surprising 512-world default.
+      throw new Error(
+        '_WarpedTileLayer: sourceTileMatrixSet requires sourceCrs (the CRS the TMS is described ' +
+          "in). Pass sourceCrs: 'EPSG:4326' for a lat/long source, or a CRSDefinition carrying " +
+          "the source's inverse transform. Omit both props for the built-in Web-Mercator source."
+      );
+    }
     // Built-in Web-Mercator source over deck's 512-unit world (today's hardcoded behavior).
-    const tms = sourceTileMatrixSet
-      ? normalizeTileMatrixSet(sourceTileMatrixSet, {metersPerUnit: 1})
-      : makeWebMercatorQuadTms(tileSize, MAX_MERCATOR_SOURCE_LEVELS);
+    const tms = makeWebMercatorQuadTms(tileSize, MAX_MERCATOR_SOURCE_LEVELS);
     return {
       tms,
       toLngLat: mercatorToLngLat,

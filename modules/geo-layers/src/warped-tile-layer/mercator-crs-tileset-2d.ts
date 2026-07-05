@@ -96,15 +96,20 @@ export class MercatorCRSTileset2D extends Tileset2D {
       return [];
     }
     if (boundsResult.unbounded) {
-      // Fewer than 2 corners unprojected finitely: bounds is the whole-source safety net,
-      // so cap z or getTileIndicesInBounds could be asked to fill up to 4^z tiles
+      // Fewer than 2 corners survived (non-finite unprojection, or out of the source
+      // projection's domain): bounds is the whole-source safety net, so cap z or
+      // getTileIndicesInBounds could be asked to fill up to 4^z tiles. Note that
+      // CRSViewport.unproject itself always returns finite lnglats (even above the horizon —
+      // see the pitch envelope note in pitched-lod.ts), so in practice this fires for
+      // non-CRSViewport viewports or a source/view domain mismatch.
       z = Math.min(z, MAX_FALLBACK_SOURCE_ZOOM);
       if (!this._warnedUnboundedFallback) {
         this._warnedUnboundedFallback = true;
         log.warn(
-          '_WarpedTileLayer: fewer than 2 view corners unprojected to a finite lnglat (camera ' +
-            `likely pointed near/above the horizon) — falling back to a bounded z (${MAX_FALLBACK_SOURCE_ZOOM}) ` +
-            'instead of the whole-source bounds at the view-matched level'
+          '_WarpedTileLayer: fewer than 2 view corners mapped to a finite source coordinate ' +
+            '(unprojection non-finite, or outside the source projection domain) — falling back ' +
+            `to a bounded z (${MAX_FALLBACK_SOURCE_ZOOM}) instead of the whole-source bounds ` +
+            'at the view-matched level'
         )();
       }
     }
@@ -119,9 +124,15 @@ export class MercatorCRSTileset2D extends Tileset2D {
         tms: source.tms,
         forward: source.fromLngLat,
         // Never finer than the view-center level (near band is closer, but fetching finer than
-        // the unpitched path would defeats the point); far bands clamp to the flood-guard floor.
-        minLevel: Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+        // the unpitched path would defeats the point); far bands clamp to the flood-guard floor,
+        // itself clamped to `z` so an out-of-range minZoom can't index past the TMS. zoomOffset
+        // is folded into `z` and passed through so each band applies the same shift.
+        minLevel: Math.min(
+          Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+          z
+        ),
         maxLevel: z,
+        zoomOffset,
         clipBounds: boundsResult.bounds
       });
       if (banded) {
@@ -180,7 +191,11 @@ export class MercatorCRSTileset2D extends Tileset2D {
 
   /** Resolve (and memoize) the source pyramid from tileSize/sourceTileMatrixSet/sourceCrs. The
    * source depends only on those props, NOT on the view CRS — that is what lets one tileset warp
-   * the same source into any CRS view, so a CRS swap deliberately does not reset it. */
+   * the same source into any CRS view, so a CRS swap deliberately does not reset it. A change of
+   * the source props themselves DOES flush cached tiles (mirroring the `_crsCode` flush in
+   * `getTileIndices`): cached indices/`boundsWorld`/meshes were computed against the old source
+   * grid and are meaningless under the new one. Same `finalize()` caveat: tiles are dropped
+   * without firing `onTileUnload`. */
   private _getSource(): ResolvedWarpSource {
     const {sourceTileMatrixSet, sourceCrs} = this.opts as MercatorCRSTileset2DProps;
     const tileSize = this.opts.tileSize ?? 256;
@@ -190,6 +205,9 @@ export class MercatorCRSTileset2D extends Tileset2D {
       this._sourceTmsRef !== (sourceTileMatrixSet ?? null) ||
       this._sourceCrsRef !== (sourceCrs ?? null)
     ) {
+      if (this._source) {
+        this.finalize();
+      }
       this._source = resolveWarpSource({tileSize, sourceTileMatrixSet, sourceCrs});
       this._sourceTileSize = tileSize;
       this._sourceTmsRef = sourceTileMatrixSet ?? null;
@@ -199,9 +217,15 @@ export class MercatorCRSTileset2D extends Tileset2D {
   }
 
   /** View bounds in source-pyramid units. lnglat corners are mapped through the source's own
-   * `fromLngLat` (with any domain clamp). When at least 2 corners unproject finitely their bbox
-   * is used as-is; with fewer, there's no reliable bbox, so bounds fall back to the whole source
-   * grid and `unbounded: true` tells the caller to also clamp z (see `MAX_FALLBACK_SOURCE_ZOOM`). */
+   * `fromLngLat`; a corner only counts as finite when BOTH the unprojection and the source
+   * projection are finite. `sourceCrs.transform.forward` SHOULD clamp out-of-domain input to
+   * its domain edge (like the built-in Mercator source does with its latitude clamp) so the
+   * fetch area stays tight — but a forward that returns NaN outside its domain is tolerated:
+   * the poisoned corner is skipped instead of nulling the whole bounds (which would silently
+   * select ZERO tiles whenever any view corner leaves the source domain). When at least 2
+   * corners survive, their bbox is used as-is; with fewer, there's no reliable bbox, so bounds
+   * fall back to the whole source grid and `unbounded: true` tells the caller to also clamp z
+   * (see `MAX_FALLBACK_SOURCE_ZOOM`). */
   private _getViewBoundsWorld(
     viewport: CRSViewportLike,
     extentLngLat: Bounds | null
@@ -221,14 +245,19 @@ export class MercatorCRSTileset2D extends Tileset2D {
     let maxY = -Infinity;
     let finiteCorners = 0;
     for (const lnglat of corners) {
-      if (Number.isFinite(lnglat[0]) && Number.isFinite(lnglat[1])) {
-        finiteCorners++;
-        const [wx, wy] = source.fromLngLat([lnglat[0], lnglat[1]]);
-        minX = Math.min(minX, wx);
-        minY = Math.min(minY, wy);
-        maxX = Math.max(maxX, wx);
-        maxY = Math.max(maxY, wy);
+      if (!Number.isFinite(lnglat[0]) || !Number.isFinite(lnglat[1])) {
+        continue;
       }
+      const [wx, wy] = source.fromLngLat([lnglat[0], lnglat[1]]);
+      if (!Number.isFinite(wx) || !Number.isFinite(wy)) {
+        // Out of the source projection's domain — skip like a non-finite corner
+        continue;
+      }
+      finiteCorners++;
+      minX = Math.min(minX, wx);
+      minY = Math.min(minY, wy);
+      maxX = Math.max(maxX, wx);
+      maxY = Math.max(maxY, wy);
     }
     const unbounded = finiteCorners < 2;
     if (unbounded) {
@@ -245,12 +274,21 @@ export class MercatorCRSTileset2D extends Tileset2D {
       const [west, south, east, north] = extentLngLat;
       const [eMinX, eMinY] = source.fromLngLat([west, south]);
       const [eMaxX, eMaxY] = source.fromLngLat([east, north]);
-      minX = Math.max(minX, Math.min(eMinX, eMaxX));
-      minY = Math.max(minY, Math.min(eMinY, eMaxY));
-      maxX = Math.min(maxX, Math.max(eMinX, eMaxX));
-      maxY = Math.min(maxY, Math.max(eMinY, eMaxY));
-      if (!(minX < maxX) || !(minY < maxY)) {
-        return null;
+      // Same domain tolerance as the corners: only intersect with the extent when both of its
+      // projections are finite; otherwise skip the clamp (bounds stay corner-derived).
+      if (
+        Number.isFinite(eMinX) &&
+        Number.isFinite(eMinY) &&
+        Number.isFinite(eMaxX) &&
+        Number.isFinite(eMaxY)
+      ) {
+        minX = Math.max(minX, Math.min(eMinX, eMaxX));
+        minY = Math.max(minY, Math.min(eMinY, eMaxY));
+        maxX = Math.min(maxX, Math.max(eMinX, eMaxX));
+        maxY = Math.min(maxY, Math.max(eMinY, eMaxY));
+        if (!(minX < maxX) || !(minY < maxY)) {
+          return null;
+        }
       }
     }
     return {bounds: [minX, minY, maxX, maxY], unbounded};

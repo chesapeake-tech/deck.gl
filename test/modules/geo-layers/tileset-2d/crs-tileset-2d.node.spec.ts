@@ -198,6 +198,54 @@ test('CRSTileset2D#unpitched view is byte-identical to the single-level path', (
   expect(indices).toEqual(expected);
 });
 
+test('CRSTileset2D#pitched view with minZoom deeper than the TMS clamps instead of crashing', () => {
+  // Regression: a minZoom past the last tileMatrices index (with an extent, so the flood guard
+  // passes) used to reach tileMatrices[minZoom] -> undefined -> TypeError inside the band
+  // traversal. The band floor must clamp to the (already array-clamped) selected level.
+  const tileset = new CRSTileset2D({
+    getTileData,
+    tileMatrixSet: GIBS_500M_TMS, // 8 levels: 0..7
+    minZoom: 20,
+    extent: [-90, 20, -50, 60]
+  });
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 800,
+    height: 600,
+    longitude: -70,
+    latitude: 40,
+    zoom: 3,
+    pitch: 60
+  });
+  tileset.update(viewport); // must not throw
+  const tiles = tileset.selectedTiles!;
+  expect(tiles.length).toBeGreaterThan(0);
+  // everything clamps to the deepest real level
+  expect(new Set(tiles.map(t => t.zoom))).toEqual(new Set([7]));
+});
+
+test('CRSTileset2D#pitched bands apply zoomOffset', () => {
+  const makeTiles = (zoomOffset: number) => {
+    const tileset = new CRSTileset2D({getTileData, tileMatrixSet: makeUTM18NTms(9), zoomOffset});
+    const viewport = new CRSViewport({
+      crs: UTM18N,
+      width: 800,
+      height: 600,
+      longitude: -72,
+      latitude: 40,
+      zoom: 6,
+      pitch: 65
+    });
+    tileset.update(viewport);
+    return tileset.selectedTiles!;
+  };
+  const levelsOf = (tiles: {zoom: number}[]) =>
+    [...new Set(tiles.map(t => t.zoom))].sort((a, b) => a - b);
+  expect(levelsOf(makeTiles(0))).toEqual([5, 6]);
+  // +1 zoomOffset shifts every band (near AND far) one level finer
+  expect(levelsOf(makeTiles(1))).toEqual([6, 7]);
+});
+
 test('CRSTileset2D#pitched view keeps the minZoom flood guard (no extent -> no tiles)', () => {
   // A pitched view far above minZoom: without an extent, the guard must still return nothing
   // (banding must not become a backdoor around the flood guard).

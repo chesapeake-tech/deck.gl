@@ -109,16 +109,23 @@ export class CRSTileset2D extends Tileset2D {
 
     // Pitched view: pick per-region levels (far coarser, near finer) rather than filling the
     // whole view AABB at the single view-center level `z`. The helper reuses the exact same
-    // `crs.transform.forward` as `_getViewBoundsCRS`, so a non-finite (horizon) corner makes it
-    // return null and we fall through to the unchanged single-level path — which keeps the
-    // extent-clamped fallback in `_getViewBoundsCRS`. minLevel is the flood-guard floor
-    // (`z` was already clamped up to minZoom above), maxLevel the view-center level.
+    // `crs.transform.forward` as `_getViewBoundsCRS`, so a sample outside the transform's
+    // domain (non-finite forward) makes it return null and we fall through to the unchanged
+    // single-level path — which keeps the extent-clamped fallback in `_getViewBoundsCRS`.
+    // (`unproject` itself always returns finite lnglats, even above the horizon — see the
+    // pitch envelope note in pitched-lod.ts.) minLevel is the flood-guard floor clamped to
+    // the selected level (`z` was already clamped into the array above); zoomOffset is folded
+    // into `z` and passed through so each band applies the same shift.
     const banded = selectPitchedBandTiles({
       viewport: crsViewport,
       tms,
       forward: crsViewport.crs.transform.forward,
-      minLevel: Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+      minLevel: Math.min(
+        Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
+        z
+      ),
       maxLevel: z,
+      zoomOffset,
       clipBounds: bounds
     });
     if (banded) {

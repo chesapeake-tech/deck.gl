@@ -87,5 +87,25 @@ export default [
       })
     ],
     goldenImage: './test/render/golden-images/crs-warped-raster.png'
+  },
+  {
+    // Continental-scale variant: a low view zoom with a negative zoomOffset forces very coarse
+    // source tiles (source z ~6) at a screen scale where their Mercator->UTM curvature is
+    // strongly visible - the adaptive mesh resolver picks its finer grids (N=16 here; see
+    // estimateWarpMeshResolution) instead of the near-affine N=4 of the zoom-7 case above.
+    // Exercises the distortion-adaptive path end-to-end in a real render.
+    name: 'crs-warped-raster-coarse',
+    views: new MapView({crs: UTM18N}),
+    viewState: {...VIEW_STATE, zoom: 2},
+    layers: [
+      new WarpedTileLayer({
+        id: 'crs-warped-raster-coarse',
+        tileSize: TILE_SIZE,
+        maxZoom: 19,
+        zoomOffset: -3,
+        getTileData: makeCheckerboardTileData
+      })
+    ],
+    goldenImage: './test/render/golden-images/crs-warped-raster-coarse.png'
   }
 ];
