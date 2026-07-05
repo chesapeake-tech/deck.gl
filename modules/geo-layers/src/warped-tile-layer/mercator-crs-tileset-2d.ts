@@ -3,32 +3,41 @@
 // Copyright (c) vis.gl contributors
 
 import {log, Viewport} from '@deck.gl/core';
-import {lngLatToWorld, worldToLngLat} from '@math.gl/web-mercator';
 import {Tileset2D, Tileset2DProps} from '../tileset-2d/tileset-2d';
-import {getTileBoundsCRS, getTileIndicesInBounds} from '../tileset-2d/tile-matrix-set';
-import type {NormalizedTileMatrixSet} from '../tileset-2d/tile-matrix-set';
+import {
+  getTileBoundsCRS,
+  getTileIndicesInBounds,
+  getTileIndexAtPoint
+} from '../tileset-2d/tile-matrix-set';
+import type {TileMatrixSet} from '../tileset-2d/tile-matrix-set';
 import type {Bounds, TileIndex} from '../tileset-2d/types';
 import {selectPitchedBandTiles} from '../tileset-2d/pitched-lod';
-import {makeWebMercatorQuadTms, selectMercatorSourceZoom, MAX_MERCATOR_LATITUDE} from './warp-mesh';
-import type {WarpTargetCRS} from './warp-mesh';
+import {resolveWarpSource, selectWarpSourceZoom} from './warp-mesh';
+import type {WarpTargetCRS, WarpSourceCrs, ResolvedWarpSource} from './warp-mesh';
 
 type CRSViewportLike = Viewport & {crs: WarpTargetCRS};
 
-/** Number of source Web-Mercator pyramid levels to build (indices 0..22) — 22 is OSM's
- * deepest commonly served level, so 23 levels covers it. */
-const MAX_SOURCE_LEVELS = 23;
+/** Options this tileset reads beyond the base `Tileset2DProps` — the source pyramid description
+ * forwarded by `_WarpedTileLayer`. Both default to the built-in Web-Mercator source. */
+export type MercatorCRSTileset2DProps = Tileset2DProps & {
+  sourceTileMatrixSet?: TileMatrixSet | null;
+  sourceCrs?: WarpSourceCrs;
+};
 
 /** Fallback z cap when fewer than 2 view corners unproject finitely (e.g. the camera points
  * near/above the horizon at a steep pitch). With no reliable corner bbox to bound the fetch,
- * `_getViewBoundsWorld` widens to the whole Mercator world, so z must stay shallow here: 4^z
+ * `_getViewBoundsWorld` widens to the whole source grid, so z must stay shallow here: 4^z
  * tiles is 65536 at level 8, versus up to 4^19 if an unclamped deep z were kept. */
 const MAX_FALLBACK_SOURCE_ZOOM = 8;
 
-/** Indexes a Web-Mercator XYZ pyramid (OSM, Esri, ...) from a CRS view
- * (a `MapView` with a non-Mercator `crs`). Used by `_WarpedTileLayer`. */
+/** Indexes a source raster tile pyramid (a Web-Mercator OSM/Esri pyramid by default, or any TMS
+ * source via `sourceTileMatrixSet`/`sourceCrs`) from a CRS view (a `MapView` with a non-Mercator
+ * `crs`), for warping by `_WarpedTileLayer`. */
 export class MercatorCRSTileset2D extends Tileset2D {
-  private _tms: NormalizedTileMatrixSet | null = null;
-  private _tmsTileSize: number | null = null;
+  private _source: ResolvedWarpSource | null = null;
+  private _sourceTileSize: number | null = null;
+  private _sourceTmsRef: TileMatrixSet | null | undefined = undefined;
+  private _sourceCrsRef: WarpSourceCrs | undefined = undefined;
   private _crsCode: string | null = null;
   private _warnedUnboundedFallback = false;
 
@@ -59,22 +68,16 @@ export class MercatorCRSTileset2D extends Tileset2D {
     }
     this._crsCode = crsViewport.crs.code;
 
-    const {tileSize, zoomOffset, visibleMinZoom, visibleMaxZoom, extent} = this.opts;
+    const source = this._getSource();
+    const {zoomOffset, visibleMinZoom, visibleMaxZoom, extent} = this.opts;
     if (visibleMinZoom != null && viewport.zoom < visibleMinZoom) {
       return [];
     }
     if (visibleMaxZoom != null && viewport.zoom > visibleMaxZoom) {
       return [];
     }
-    if (!this._tms || this._tmsTileSize !== tileSize) {
-      // The source Web-Mercator pyramid only depends on tileSize, not on the view's CRS
-      // (that's what makes this tileset able to warp the same pyramid into any CRS view),
-      // so a CRS swap above deliberately does not reset `_tms`.
-      this._tms = makeWebMercatorQuadTms(tileSize, MAX_SOURCE_LEVELS);
-      this._tmsTileSize = tileSize;
-    }
 
-    let z = selectMercatorSourceZoom(crsViewport, tileSize, zoomOffset);
+    let z = selectWarpSourceZoom(crsViewport, source, this.opts.tileSize ?? 256, zoomOffset);
     if (typeof minZoom === 'number' && Number.isFinite(minZoom) && z < minZoom) {
       // Same policy as the OSM path and CRSTileset2D: without an extent to bound
       // the area, fetching far-below-view minZoom tiles could request the world
@@ -86,14 +89,14 @@ export class MercatorCRSTileset2D extends Tileset2D {
     if (typeof maxZoom === 'number' && Number.isFinite(maxZoom) && z > maxZoom) {
       z = maxZoom;
     }
-    z = Math.max(0, Math.min(z, this._tms.tileMatrices.length - 1));
+    z = Math.max(0, Math.min(z, source.tms.tileMatrices.length - 1));
 
     const boundsResult = this._getViewBoundsWorld(crsViewport, (extent as Bounds | null) || null);
     if (!boundsResult) {
       return [];
     }
     if (boundsResult.unbounded) {
-      // Fewer than 2 corners unprojected finitely: bounds is the whole-world safety net,
+      // Fewer than 2 corners unprojected finitely: bounds is the whole-source safety net,
       // so cap z or getTileIndicesInBounds could be asked to fill up to 4^z tiles
       z = Math.min(z, MAX_FALLBACK_SOURCE_ZOOM);
       if (!this._warnedUnboundedFallback) {
@@ -101,24 +104,20 @@ export class MercatorCRSTileset2D extends Tileset2D {
         log.warn(
           '_WarpedTileLayer: fewer than 2 view corners unprojected to a finite lnglat (camera ' +
             `likely pointed near/above the horizon) — falling back to a bounded z (${MAX_FALLBACK_SOURCE_ZOOM}) ` +
-            'instead of the whole-world bounds at the view-matched level'
+            'instead of the whole-source bounds at the view-matched level'
         )();
       }
     }
     if (!boundsResult.unbounded) {
       // Pitched view: fetch far tiles coarser and near tiles finer instead of filling the
       // whole view AABB at the single view-center level `z`. Only the finite-corner case is
-      // banded; the unbounded fallback above keeps its whole-world + capped-z behavior.
-      // `forward` clamps lnglat into the Mercator domain exactly as `_getViewBoundsWorld` does,
-      // so band footprints and the single-level bounds are computed the same way.
+      // banded; the unbounded fallback above keeps its whole-source + capped-z behavior.
+      // `forward` is the source's own lnglat->source-units map (with any domain clamp), exactly
+      // as `_getViewBoundsWorld` uses it, so band footprints and single-level bounds agree.
       const banded = selectPitchedBandTiles({
         viewport: crsViewport,
-        tms: this._tms,
-        forward: (lnglat: [number, number]) =>
-          lngLatToWorld([
-            Math.min(Math.max(lnglat[0], -180), 180),
-            Math.min(Math.max(lnglat[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
-          ]),
+        tms: source.tms,
+        forward: source.fromLngLat,
         // Never finer than the view-center level (near band is closer, but fetching finer than
         // the unpitched path would defeats the point); far bands clamp to the flood-guard floor.
         minLevel: Math.max(0, Number.isFinite(minZoom as number) ? (minZoom as number) : 0),
@@ -130,21 +129,25 @@ export class MercatorCRSTileset2D extends Tileset2D {
       }
     }
 
-    return getTileIndicesInBounds(this._tms.tileMatrices[z], boundsResult.bounds).map(({x, y}) => ({
-      x,
-      y,
-      z
-    }));
+    return getTileIndicesInBounds(source.tms.tileMatrices[z], boundsResult.bounds).map(
+      ({x, y}) => ({
+        x,
+        y,
+        z
+      })
+    );
   }
 
   getTileMetadata(index: TileIndex): Record<string, any> {
-    const tms = this._tms;
-    if (!tms) {
+    const source = this._source;
+    if (!source) {
       return {};
     }
-    const boundsWorld = getTileBoundsCRS(tms.tileMatrices[index.z], index.x, index.y);
-    const [west, north] = worldToLngLat([boundsWorld[0], boundsWorld[3]]);
-    const [east, south] = worldToLngLat([boundsWorld[2], boundsWorld[1]]);
+    // `boundsWorld` keeps its name for the mesh/layer, but now holds the tile rect in the
+    // SOURCE pyramid's units (512-unit Mercator world by default, degrees for a 4326 source).
+    const boundsWorld = getTileBoundsCRS(source.tms.tileMatrices[index.z], index.x, index.y);
+    const [west, north] = source.toLngLat([boundsWorld[0], boundsWorld[3]]);
+    const [east, south] = source.toLngLat([boundsWorld[2], boundsWorld[1]]);
     return {
       bbox: {west, north, east, south},
       boundsWorld
@@ -155,17 +158,55 @@ export class MercatorCRSTileset2D extends Tileset2D {
     if (index.z <= 0) {
       return index;
     }
-    return {x: index.x >> 1, y: index.y >> 1, z: index.z - 1};
+    const source = this._source;
+    // The built-in Web-Mercator source is a strict quadtree — trivial `x>>1` parent (unchanged).
+    if (!source || source.isMercator) {
+      return {x: index.x >> 1, y: index.y >> 1, z: index.z - 1};
+    }
+    // A general source TMS need not be a quadtree (e.g. GIBS grows 2->3->5->10), so the parent is
+    // the level-(z-1) tile containing this tile's center, mirroring CRSTileset2D.getParentIndex.
+    const z = index.z - 1;
+    const parentTm = source.tms.tileMatrices[z];
+    const [minX, minY, maxX, maxY] = getTileBoundsCRS(
+      source.tms.tileMatrices[index.z],
+      index.x,
+      index.y
+    );
+    const parent = getTileIndexAtPoint(parentTm, [(minX + maxX) / 2, (minY + maxY) / 2], {
+      clamp: true
+    })!;
+    return {x: parent.x, y: parent.y, z};
   }
 
-  /** View bounds in 512-unit Mercator world coordinates. Latitudes are clamped to the
-   * Mercator domain. When at least 2 corners unproject finitely, their bbox is used as-is;
-   * with fewer, there's no reliable bbox, so bounds fall back to the whole world and
-   * `unbounded: true` tells the caller to also clamp z (see `MAX_FALLBACK_SOURCE_ZOOM`). */
+  /** Resolve (and memoize) the source pyramid from tileSize/sourceTileMatrixSet/sourceCrs. The
+   * source depends only on those props, NOT on the view CRS — that is what lets one tileset warp
+   * the same source into any CRS view, so a CRS swap deliberately does not reset it. */
+  private _getSource(): ResolvedWarpSource {
+    const {sourceTileMatrixSet, sourceCrs} = this.opts as MercatorCRSTileset2DProps;
+    const tileSize = this.opts.tileSize ?? 256;
+    if (
+      !this._source ||
+      this._sourceTileSize !== tileSize ||
+      this._sourceTmsRef !== (sourceTileMatrixSet ?? null) ||
+      this._sourceCrsRef !== (sourceCrs ?? null)
+    ) {
+      this._source = resolveWarpSource({tileSize, sourceTileMatrixSet, sourceCrs});
+      this._sourceTileSize = tileSize;
+      this._sourceTmsRef = sourceTileMatrixSet ?? null;
+      this._sourceCrsRef = sourceCrs ?? null;
+    }
+    return this._source;
+  }
+
+  /** View bounds in source-pyramid units. lnglat corners are mapped through the source's own
+   * `fromLngLat` (with any domain clamp). When at least 2 corners unproject finitely their bbox
+   * is used as-is; with fewer, there's no reliable bbox, so bounds fall back to the whole source
+   * grid and `unbounded: true` tells the caller to also clamp z (see `MAX_FALLBACK_SOURCE_ZOOM`). */
   private _getViewBoundsWorld(
     viewport: CRSViewportLike,
     extentLngLat: Bounds | null
   ): {bounds: Bounds; unbounded: boolean} | null {
+    const source = this._getSource();
     const {width, height} = viewport;
     const corners = [
       [0, 0],
@@ -182,10 +223,7 @@ export class MercatorCRSTileset2D extends Tileset2D {
     for (const lnglat of corners) {
       if (Number.isFinite(lnglat[0]) && Number.isFinite(lnglat[1])) {
         finiteCorners++;
-        const [wx, wy] = lngLatToWorld([
-          Math.min(Math.max(lnglat[0], -180), 180),
-          Math.min(Math.max(lnglat[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
-        ]);
+        const [wx, wy] = source.fromLngLat([lnglat[0], lnglat[1]]);
         minX = Math.min(minX, wx);
         minY = Math.min(minY, wy);
         maxX = Math.max(maxX, wx);
@@ -194,28 +232,23 @@ export class MercatorCRSTileset2D extends Tileset2D {
     }
     const unbounded = finiteCorners < 2;
     if (unbounded) {
-      minX = Math.min(minX, 0);
-      minY = Math.min(minY, 0);
-      maxX = Math.max(maxX, 512);
-      maxY = Math.max(maxY, 512);
+      const [sMinX, sMinY, sMaxX, sMaxY] = source.sourceBounds;
+      minX = Math.min(minX, sMinX);
+      minY = Math.min(minY, sMinY);
+      maxX = Math.max(maxX, sMaxX);
+      maxY = Math.max(maxY, sMaxY);
     }
     if (!Number.isFinite(minX)) {
       return null;
     }
     if (extentLngLat) {
       const [west, south, east, north] = extentLngLat;
-      const [eMinX, eMinY] = lngLatToWorld([
-        Math.min(Math.max(west, -180), 180),
-        Math.min(Math.max(south, -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
-      ]);
-      const [eMaxX, eMaxY] = lngLatToWorld([
-        Math.min(Math.max(east, -180), 180),
-        Math.min(Math.max(north, -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)
-      ]);
-      minX = Math.max(minX, eMinX);
-      minY = Math.max(minY, eMinY);
-      maxX = Math.min(maxX, eMaxX);
-      maxY = Math.min(maxY, eMaxY);
+      const [eMinX, eMinY] = source.fromLngLat([west, south]);
+      const [eMaxX, eMaxY] = source.fromLngLat([east, north]);
+      minX = Math.max(minX, Math.min(eMinX, eMaxX));
+      minY = Math.max(minY, Math.min(eMinY, eMaxY));
+      maxX = Math.min(maxX, Math.max(eMinX, eMaxX));
+      maxY = Math.min(maxY, Math.max(eMinY, eMaxY));
       if (!(minX < maxX) || !(minY < maxY)) {
         return null;
       }

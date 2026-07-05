@@ -14,6 +14,7 @@ import {
 import {getTileIndicesInBounds} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {osmTile2lngLat} from '@deck.gl/geo-layers/tileset-2d/utils';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
+import {GIBS_500M_TMS} from '../tileset-2d/tms-fixtures';
 
 const getTileData = () => Promise.resolve(null);
 
@@ -55,6 +56,52 @@ function getIndices(tileset: MercatorCRSTileset2D, viewport: CRSViewport) {
     zRange: null
   });
 }
+
+test('MercatorCRSTileset2D#warps a non-Mercator (4326 GIBS) source in a UTM view', () => {
+  const tileset = new MercatorCRSTileset2D({
+    getTileData,
+    tileSize: 512,
+    sourceTileMatrixSet: GIBS_500M_TMS,
+    sourceCrs: 'EPSG:4326'
+  } as any);
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 3
+  });
+  const indices = getIndices(tileset, viewport);
+  expect(indices.length).toBeGreaterThan(0);
+  // GIBS 500m bottoms out at level 7; a UTM zoom-3 view resolves to that deepest level
+  expect(new Set(indices.map(i => i.z))).toEqual(new Set([7]));
+
+  // Metadata: boundsWorld is in the SOURCE units (degrees); for a 4326 source the lnglat bbox
+  // equals it (identity source->lnglat). Index math is the shared tile-matrix-set code.
+  tileset.update(viewport);
+  // metadata is exact for any selected level-7 tile: bbox == boundsWorld (identity 4326 source)
+  const anyTile = tileset.selectedTiles!.find(t => t.zoom === 7)!;
+  const abw = (anyTile as any).boundsWorld as [number, number, number, number];
+  const abbox = anyTile.bbox as {west: number; north: number; east: number; south: number};
+  expect(abbox.west).toBeCloseTo(abw[0], 6);
+  expect(abbox.north).toBeCloseTo(abw[3], 6);
+  expect(abbox.east).toBeCloseTo(abw[2], 6);
+  expect(abbox.south).toBeCloseTo(abw[1], 6);
+  // the selected set covers the view center (-72, 40) — some tile contains it (within epsilon)
+  const eps = 1e-6;
+  const tile = tileset.selectedTiles!.find(t => {
+    const b = t.bbox as {west: number; north: number; east: number; south: number};
+    return b.west - eps <= -72 && b.east + eps >= -72 && b.south - eps <= 40 && b.north + eps >= 40;
+  })!;
+  expect(tile).toBeDefined();
+
+  // Geometric (non-quadtree) parent — GIBS is not a quadtree, so this is not x>>1
+  const parent = tileset.getParentIndex(tile.index) as {x: number; y: number; z: number};
+  expect(parent.z).toBe(6);
+  expect(parent.x).toBeGreaterThanOrEqual(0);
+  expect(parent.x).toBeLessThan(GIBS_500M_TMS.tileMatrices[6].matrixWidth);
+});
 
 test('MercatorCRSTileset2D#pitched view selects per-region LOD (far coarser, near finer)', () => {
   const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256});
