@@ -8,6 +8,10 @@ import {
   _CRSTileset2D as CRSTileset2D,
   _getURLFromTemplate as getURLFromTemplate
 } from '@deck.gl/geo-layers';
+import {
+  getTileIndicesInBounds,
+  normalizeTileMatrixSet
+} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
 import {makeWorldCRS84Quad512, makeUTM18NTms, GIBS_500M_TMS} from './tms-fixtures';
 
@@ -91,6 +95,128 @@ test('CRSTileset2D#UTM indices, metadata and parent chain', () => {
   const parentIndex = tileset.getParentIndex(child.index);
   expect(parentIndex.z).toBe(2);
   expect((parentIndex as any).tm).toBe('2');
+});
+
+function crsIndices(tileset: CRSTileset2D, viewport: CRSViewport) {
+  return tileset.getTileIndices({
+    viewport: viewport as any,
+    minZoom: undefined,
+    maxZoom: undefined,
+    zRange: null
+  }) as {x: number; y: number; z: number; tm: string}[];
+}
+
+test('CRSTileset2D#pitched view selects per-region LOD (far coarser, near finer)', () => {
+  const tms = makeUTM18NTms(9);
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: tms});
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 6,
+    pitch: 65
+  });
+  const indices = crsIndices(tileset, viewport);
+  const zs = indices.map(i => i.z);
+  // Known answer: near band at the view-center level 6, far band one level coarser
+  expect([...new Set(zs)].sort((a, b) => a - b)).toEqual([5, 6]);
+  expect(Math.min(...zs)).toBe(5);
+  expect(Math.max(...zs)).toBe(6);
+  expect(indices.length).toBe(20);
+  // every tile carries its level's TMS id (not the view-center level's)
+  for (const i of indices) {
+    expect(i.tm).toBe(String(i.z));
+  }
+
+  // Pre-change behavior: fill the whole view AABB at the single finest level.
+  const ntms = normalizeTileMatrixSet(tms, {metersPerUnit: 1});
+  const corners = [
+    [0, 0],
+    [viewport.width, 0],
+    [0, viewport.height],
+    [viewport.width, viewport.height]
+  ]
+    .map(p => viewport.unproject(p))
+    .map(ll => UTM18N.transform.forward([ll[0], ll[1]]));
+  let a = Infinity;
+  let b = Infinity;
+  let c = -Infinity;
+  let d = -Infinity;
+  for (const p of corners) {
+    a = Math.min(a, p[0]);
+    b = Math.min(b, p[1]);
+    c = Math.max(c, p[0]);
+    d = Math.max(d, p[1]);
+  }
+  const singleLevel = getTileIndicesInBounds(ntms.tileMatrices[6], [a, b, c, d]).length;
+  expect(singleLevel).toBe(49);
+  expect(indices.length).toBeLessThan(singleLevel * 0.5);
+});
+
+test('CRSTileset2D#unpitched view is byte-identical to the single-level path', () => {
+  const tms = makeUTM18NTms(9);
+  const tileset = new CRSTileset2D({getTileData, tileMatrixSet: tms});
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 6,
+    pitch: 0
+  });
+  const indices = crsIndices(tileset, viewport);
+  expect(new Set(indices.map(i => i.z))).toEqual(new Set([6]));
+  // matches a direct single-level fill of the view AABB
+  const ntms = normalizeTileMatrixSet(tms, {metersPerUnit: 1});
+  const corners = [
+    [0, 0],
+    [viewport.width, 0],
+    [0, viewport.height],
+    [viewport.width, viewport.height]
+  ]
+    .map(p => viewport.unproject(p))
+    .map(ll => UTM18N.transform.forward([ll[0], ll[1]]));
+  let a = Infinity;
+  let b = Infinity;
+  let c = -Infinity;
+  let d = -Infinity;
+  for (const p of corners) {
+    a = Math.min(a, p[0]);
+    b = Math.min(b, p[1]);
+    c = Math.max(c, p[0]);
+    d = Math.max(d, p[1]);
+  }
+  const expected = getTileIndicesInBounds(ntms.tileMatrices[6], [a, b, c, d]).map(({x, y}) => ({
+    x,
+    y,
+    z: 6,
+    tm: '6'
+  }));
+  expect(indices).toEqual(expected);
+});
+
+test('CRSTileset2D#pitched view keeps the minZoom flood guard (no extent -> no tiles)', () => {
+  // A pitched view far above minZoom: without an extent, the guard must still return nothing
+  // (banding must not become a backdoor around the flood guard).
+  const tileset = new CRSTileset2D({
+    getTileData,
+    tileMatrixSet: GIBS_500M_TMS,
+    minZoom: 5
+  });
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 1024,
+    height: 512,
+    longitude: 0,
+    latitude: 0,
+    zoom: Math.log2(0.703125 / 0.5625),
+    pitch: 60
+  });
+  tileset.update(viewport);
+  expect(tileset.selectedTiles).toEqual([]);
 });
 
 test('CRSTileset2D#throws without a CRS viewport', () => {
