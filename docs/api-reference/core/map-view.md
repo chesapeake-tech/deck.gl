@@ -59,14 +59,35 @@ Render the map in a coordinate reference system other than Web Mercator. Accepts
 - `'EPSG:3857'` (default): Web Mercator, the standard behavior.
 - `'EPSG:4326'`: equirectangular (plate carrée) projection, built in.
 - A `CRSDefinition` object for any other projected CRS. deck.gl does not bundle a
-  projection library; supply the transform from proj4js or similar:
+  projection library; supply the transform from proj4js or similar. The `_createProj4CRS`
+  helper builds the `CRSDefinition` for you from a proj4-style converter, so it doesn't
+  need to be hand-written:
 
 ```js
 import proj4 from 'proj4';
-import {MapView} from '@deck.gl/core';
+import {MapView, _createProj4CRS as createProj4CRS} from '@deck.gl/core';
 
 const converter = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
 
+const view = new MapView({
+  crs: createProj4CRS({
+    code: 'EPSG:32618',
+    converter,
+    // UTM zone 18N's WGS84 extent - simpler to find than the projected extent below
+    extentGeographic: [-78, 0, -72, 84],
+    units: 'meters'
+  })
+});
+```
+
+`createProj4CRS` accepts any object shaped like a proj4 converter: proj4's own `Converter`
+(`.forward`/`.inverse`) or `@math.gl/proj4`'s `Proj4Projection` (`.project`/`.unproject`) both
+work, normalized to the `transform` shape below. It takes the converter as an argument rather
+than depending on a projection library itself, so `@deck.gl/core` gains no new runtime
+dependency — bring whichever converter your app already constructed. To write the
+`CRSDefinition` by hand instead:
+
+```js
 const view = new MapView({
   crs: {
     code: 'EPSG:32618',
@@ -74,7 +95,6 @@ const view = new MapView({
       forward: lnglat => converter.forward(lnglat),
       inverse: xy => converter.inverse(xy)
     },
-    // UTM zone 18N's WGS84 extent - simpler to find than the projected extent below
     extentGeographic: [-78, 0, -72, 84],
     units: 'meters'
   }

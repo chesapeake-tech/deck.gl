@@ -400,6 +400,74 @@ export function clampLngLatToCRSExtent(
   return crs.transform.inverse([clampedX, clampedY]);
 }
 
+/** A proj4-style converter: proj4's own `Converter` (`.forward`/`.inverse`) or
+ * `@math.gl/proj4`'s `Proj4Projection` (`.project`/`.unproject`). Either naming is accepted
+ * by `createProj4CRS`, so callers can pass whichever they already have on hand without
+ * writing an adapter. */
+export type Proj4LikeConverter =
+  | {
+      forward: (lnglat: [number, number]) => [number, number];
+      inverse: (xy: [number, number]) => [number, number];
+    }
+  | {
+      project: (lnglat: number[]) => number[];
+      unproject: (xy: number[]) => number[];
+    };
+
+/** Options for `createProj4CRS`. Exactly one of `extent`/`extentGeographic` is required,
+ * mirroring `CRSDefinition`'s own contract. */
+export type CreateProj4CRSOptions = {
+  /** Identifier, e.g. 'EPSG:32618'. Used for viewport equality checks and debugging. */
+  code: string;
+  /** A proj4 (or `@math.gl/proj4`) converter transforming WGS84 degrees to/from this CRS's
+   * units. Not bundled by deck.gl - construct it with whichever projection library the app
+   * already depends on, e.g. `proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m')`
+   * or `new Proj4Projection({from: 'EPSG:4326', to: ...})`. */
+  converter: Proj4LikeConverter;
+  /** CRS axis unit. Relates elevation (meters) and distance scales to CRS units. Default 'meters'. */
+  units?: 'meters' | 'degrees';
+} & (
+  | {
+      /** [minX, minY, maxX, maxY] valid bounds in CRS units. Defines the common-space world
+       * scale. Prefer this over `extentGeographic` when the projected extent is known exactly. */
+      extent: [number, number, number, number];
+      extentGeographic?: undefined;
+    }
+  | {
+      extent?: undefined;
+      /** [west, south, east, north] valid bounds in WGS84 degrees - a convenience for CRSs
+       * (e.g. a single UTM zone) where a geographic bbox is at hand but the projected extent
+       * is not. See `CRSDefinition#extentGeographic` for how this is turned into an extent. */
+      extentGeographic: [number, number, number, number];
+    }
+);
+
+/** Builds a `CRSDefinition` from a proj4-style converter, so apps don't have to hand-write
+ * the `{forward, inverse}` adapter around it. Takes the converter as an argument rather than
+ * depending on a projection library directly - this module (and `@deck.gl/core`) stays free
+ * of a runtime dependency on proj4; bring whichever converter your app already constructed
+ * (proj4's own `Converter`, or `@math.gl/proj4`'s `Proj4Projection`) and this normalizes
+ * either naming convention (`forward`/`inverse` or `project`/`unproject`) to the
+ * `CRSTransform` shape `CRSDefinition`/`CRSViewport` expect. */
+export function createProj4CRS(options: CreateProj4CRSOptions): CRSDefinition {
+  const {code, converter, extent, extentGeographic, units} = options;
+  const transform: CRSTransform =
+    'forward' in converter && 'inverse' in converter
+      ? {forward: converter.forward, inverse: converter.inverse}
+      : {
+          forward: (lnglat: [number, number]) => converter.project(lnglat) as [number, number],
+          inverse: (xy: [number, number]) => converter.unproject(xy) as [number, number]
+        };
+
+  return {
+    code,
+    transform,
+    ...(extent !== undefined ? {extent} : {}),
+    ...(extentGeographic !== undefined ? {extentGeographic} : {}),
+    ...(units !== undefined ? {units} : {})
+  };
+}
+
 /** DistanceScales in the shape viewport-uniforms.ts expects from getDistanceScales(origin) */
 export function getCRSDistanceScales(crs: NormalizedCRS, lnglat: number[]) {
   const jacobian = getCRSJacobian(crs, lnglat);
