@@ -256,8 +256,8 @@ fn project_position_vec4_f64(position: vec4<f32>, position64Low: vec3<f32>) -> v
       let crsJacobian = mat2x2<f32>(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
       // Assumes an identity modelMatrix: position64Low.xy is added directly here, unlike the
       // generic path below which applies modelMatrix via project_offset_(modelMatrix * vec4(position64Low, 0)).
-      // position64Low is not included in the quadratic term: it is only ever a sub-meter
-      // remainder, and its contribution to the (already-small) second-order correction is negligible.
+      // position64Low is included in the quadratic term (as part of degreesFromOrigin): it is only
+      // ever a sub-meter remainder, and its contribution to the second-order correction is negligible.
       let degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
       // Second-order (quadratic) correction: extends the local affine (Jacobian) approximation
       // with a + 0.5 * H(delta) term, reducing the linearization error from quadratic to cubic
