@@ -249,6 +249,43 @@ export function getCRSJacobian(
   return [dLng[0], dLng[1], dLat[0], dLat[1]];
 }
 
+/** Column-major 2x2 Jacobian of the lnglat->common transform, expressed in common units
+ * per METER (east, north) rather than per degree (lng, lat), at the given position:
+ * `[dX/dMeterEast, dY/dMeterEast, dX/dMeterNorth, dY/dMeterNorth]`.
+ *
+ * Derived from {@link getCRSJacobian} via the chain rule - `J_meters = J_degrees * D`,
+ * where `D` is the local degrees-per-meter diagonal (`1 / (METERS_PER_DEGREE * cos(lat))`
+ * for east, `1 / METERS_PER_DEGREE` for north, both using the same spherical-Earth
+ * `METERS_PER_DEGREE` constant `lngLatToCommon`'s siblings already rely on). This reuses
+ * the validated finite-difference machinery of `getCRSJacobian` rather than
+ * re-differentiating `lngLatToCommon` directly with meter-scale steps: a from-scratch
+ * finite difference would still need this same degrees-per-meter conversion to choose a
+ * step size in degrees, plus introduce a second free step-size to tune and validate
+ * independently of `JACOBIAN_STEP` (see the comment above `HESSIAN_STEP` for how
+ * sensitive that kind of choice is) - for no accuracy benefit, since the chain rule is
+ * exact wherever the first-order Jacobian itself is a valid local approximation.
+ *
+ * Used to project `COORDINATE_SYSTEM.METER_OFFSETS` data relative to a
+ * `coordinateOrigin` that may be far from the view center: grid convergence at that
+ * origin - not just its diagonal (isotropic) scale - must be applied to offsets from it,
+ * the same way {@link getCRSJacobian} applies it to absolute `LNGLAT` positions relative
+ * to the view center. See crs-viewport.md's Limitations section for the remaining
+ * caveat (curvature error accumulates for offsets spanning >~100km from their origin). */
+export function getCRSMetersJacobian(
+  crs: NormalizedCRS,
+  lnglat: number[]
+): [number, number, number, number] {
+  const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
+  const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((lnglat[1] * Math.PI) / 180));
+  const degLatPerMeterNorth = 1 / METERS_PER_DEGREE;
+  return [
+    dXdLng * degLngPerMeterEast,
+    dYdLng * degLngPerMeterEast,
+    dXdLat * degLatPerMeterNorth,
+    dYdLat * degLatPerMeterNorth
+  ];
+}
+
 /** Second-order (quadratic) coefficients of the lnglat->common transform at the given
  * position, per output component: `[d2/dlng2, d2/dlng*dlat, d2/dlat2]` in common units
  * per degree^2. Used to extend the first-order Jacobian approximation with a

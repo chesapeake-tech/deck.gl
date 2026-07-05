@@ -45,7 +45,8 @@ export default {
     pseudoMeters: 'f32',
     crsUnitsPerDegree: 'vec4<f32>',
     crsUnitsPerDegree2X: 'vec4<f32>',
-    crsUnitsPerDegree2Y: 'vec4<f32>'
+    crsUnitsPerDegree2Y: 'vec4<f32>',
+    crsUnitsPerMeter2x2: 'vec4<f32>'
   }
   // @ts-ignore TODO v9.1
 } as const satisfies ShaderModule<ProjectProps, ProjectUniforms, {}>;
