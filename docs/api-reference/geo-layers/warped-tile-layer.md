@@ -109,7 +109,7 @@ tile far outside a UTM zone). Pass a fixed number to override the adaptive choic
 - **Pitched views select per-region levels** (far tiles coarser, near tiles finer) instead of one
   level for the whole view. The band dedup is a center-in-cover test: it never leaves holes, but a
   coarse tile straddling a band seam can be kept and **double-drawn** under the finer tiles above
-  it (measured up to ~a quarter of selected tiles at pitch 65). This is visually benign for opaque
+  it (measured up to ~26% of on-screen pixels double-covered at pitch 65). This is visually benign for opaque
   rasters — the finer tiles render on top — but semi-transparent tile imagery may show slightly
   darker seams at band boundaries under high pitch. Exact-coverage dedup is future work.
 - **Pitch envelope.** Screen samples above the horizon do not unproject to `NaN` — they extrapolate
