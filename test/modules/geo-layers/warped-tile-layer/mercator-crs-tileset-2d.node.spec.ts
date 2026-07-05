@@ -90,6 +90,79 @@ test('MercatorCRSTileset2D#maxZoom clamps the source level; negative minZoom cla
   expect((tileset as any)._minZoom).toBe(0);
 });
 
+test('MercatorCRSTileset2D#view CRS swap flushes stale tiles', () => {
+  const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256});
+  const viewport = makeUTMViewport(7);
+  tileset.update(viewport);
+  const before = tileset.selectedTiles![0];
+  expect(before).toBeDefined();
+
+  // Same tileset instance, different view CRS — cached tiles (and any mesh/metadata
+  // memoized on them under the old CRS) must be dropped, not reused
+  const degViewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 7
+  });
+  tileset.update(degViewport);
+  expect(tileset.selectedTiles!.length).toBeGreaterThan(0);
+  expect(tileset.selectedTiles).not.toContain(before);
+  for (const tile of tileset.selectedTiles!) {
+    const {x, y, z} = tile.index as {x: number; y: number; z: number};
+    expect(x).toBeGreaterThanOrEqual(0);
+    expect(x).toBeLessThan(2 ** z);
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(y).toBeLessThan(2 ** z);
+  }
+
+  // Swapping back re-selects the same {x, y, z} but must create a fresh tile object
+  // (the old one may carry a mesh/metadata computed under the swapped-in CRS)
+  const viewport2 = makeUTMViewport(7);
+  tileset.update(viewport2);
+  const again = tileset.selectedTiles!.find(t => t.id === before.id);
+  expect(again).toBeDefined();
+  expect(again).not.toBe(before);
+});
+
+test('MercatorCRSTileset2D#unbounded fallback stays bounded when fewer than 2 corners are finite', () => {
+  const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256});
+  // Simulates a steep-pitch view: only one corner (bottom-left) unprojects finitely,
+  // the other three are beyond the horizon (NaN) — mirrors the mock-viewport pattern
+  // used by the "#throws without a CRS viewport" test above
+  const fakeViewport = {
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    zoom: 18,
+    latitude: 40,
+    distanceScales: {metersPerUnit: [1, 1, 1]},
+    unproject: (pixel: number[]) => (pixel[0] === 0 && pixel[1] === 600 ? [-72, 40] : [NaN, NaN])
+  };
+  const indices = tileset.getTileIndices({
+    viewport: fakeViewport as any,
+    minZoom: undefined,
+    maxZoom: undefined,
+    zRange: null
+  });
+  // Without the fix, z would be selected from `zoom: 18` (up to the source pyramid's
+  // deepest level) and bounds would still widen to the whole world -> up to 4^19 indices.
+  // The fallback clamps z to a shallow level instead, bounding the whole-world case to 4^z.
+  expect(indices.length).toBeGreaterThan(0);
+  expect(indices.length).toBeLessThanOrEqual(4 ** 8);
+  const z = indices[0].z;
+  expect(z).toBeLessThanOrEqual(8);
+  for (const {x, y, z: tz} of indices) {
+    expect(tz).toBe(z);
+    expect(x).toBeGreaterThanOrEqual(0);
+    expect(x).toBeLessThan(2 ** z);
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(y).toBeLessThan(2 ** z);
+  }
+});
+
 test('MercatorCRSTileset2D#4326 view: whole-world latitude clamp', () => {
   // A whole-world 4326 view sees latitudes beyond the Mercator domain; corner
   // clamping must produce the full valid grid rather than NaN indices
