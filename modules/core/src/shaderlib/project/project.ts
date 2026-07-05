@@ -43,7 +43,9 @@ export default {
     coordinateOrigin: 'vec3<f32>',
     commonOrigin: 'vec3<f32>',
     pseudoMeters: 'f32',
-    crsUnitsPerDegree: 'vec4<f32>'
+    crsUnitsPerDegree: 'vec4<f32>',
+    crsUnitsPerDegree2X: 'vec4<f32>',
+    crsUnitsPerDegree2Y: 'vec4<f32>'
   }
   // @ts-ignore TODO v9.1
 } as const satisfies ShaderModule<ProjectProps, ProjectUniforms, {}>;

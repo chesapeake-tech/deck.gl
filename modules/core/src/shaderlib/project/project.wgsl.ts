@@ -58,6 +58,8 @@ struct ProjectUniforms {
   commonOrigin: vec3<f32>,
   pseudoMeters: i32,
   crsUnitsPerDegree: vec4<f32>,
+  crsUnitsPerDegree2X: vec4<f32>,
+  crsUnitsPerDegree2Y: vec4<f32>,
 };
 
 @group(0) @binding(auto)
@@ -254,9 +256,24 @@ fn project_position_vec4_f64(position: vec4<f32>, position64Low: vec3<f32>) -> v
       let crsJacobian = mat2x2<f32>(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
       // Assumes an identity modelMatrix: position64Low.xy is added directly here, unlike the
       // generic path below which applies modelMatrix via project_offset_(modelMatrix * vec4(position64Low, 0)).
+      // position64Low is not included in the quadratic term: it is only ever a sub-meter
+      // remainder, and its contribution to the (already-small) second-order correction is negligible.
       let degreesFromOrigin = position_world.xy - project.coordinateOrigin.xy + position64Low.xy;
+      // Second-order (quadratic) correction: extends the local affine (Jacobian) approximation
+      // with a + 0.5 * H(delta) term, reducing the linearization error from quadratic to cubic
+      // in distance from the view center. See crs-utils.ts#getCRSHessian.
+      let crsQuadratic = vec3<f32>(
+        0.5 * degreesFromOrigin.x * degreesFromOrigin.x,
+        degreesFromOrigin.x * degreesFromOrigin.y,
+        0.5 * degreesFromOrigin.y * degreesFromOrigin.y
+      );
+      var commonXY = crsJacobian * degreesFromOrigin;
+      commonXY += vec2<f32>(
+        dot(project.crsUnitsPerDegree2X.xyz, crsQuadratic),
+        dot(project.crsUnitsPerDegree2Y.xyz, crsQuadratic)
+      );
       return vec4<f32>(
-        crsJacobian * degreesFromOrigin,
+        commonXY,
         project_size_float(position_world.z),
         position_world.w
       );
