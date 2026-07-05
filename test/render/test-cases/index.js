@@ -27,11 +27,13 @@ import tripsLayerTests from './trips-layer';
 import mvtLayerTests from './mvt-layer';
 import geohashLayerTests from './geohash-layer';
 import terrainLayerTests from './terrain-layer';
+import warpedTileLayerTests from './warped-tile-layer';
 // mesh-layers
 import simpleMeshLayerTests from './simple-mesh-layer';
 import scenegraphLayerTests from './scenegraph-layer';
 // other
 import viewsTests from './views';
+import crsViewTests from './crs-view';
 import effectsTests from './effects';
 import collisionFilterExtensionTests from './collision-filter-extension';
 import transitionTests from './transitions';
@@ -61,7 +63,9 @@ export default [].concat(
   geohashLayerTests,
   simpleMeshLayerTests,
   scenegraphLayerTests,
+  warpedTileLayerTests,
   viewsTests,
+  crsViewTests,
   effectsTests,
   transitionTests,
   collisionFilterExtensionTests,
