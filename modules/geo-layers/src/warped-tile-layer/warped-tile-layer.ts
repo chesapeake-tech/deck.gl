@@ -186,11 +186,15 @@ export default class WarpedTileLayer<DataT = any, ExtraPropsT extends {} = {}> e
 
     // Cache key covers every input the mesh geometry/UVs depend on: view CRS (flushes on a CRS
     // swap), the resolved grid size (data-dependent under 'auto' — two tiles or two zooms that
-    // resolve to different N must not share a mesh), the source tileSize (UV inset width), and a
-    // source marker (a non-Mercator source warps the same tile rect differently). The tile's own
+    // resolve to different N must not share a mesh), the source tileSize (UV inset width), and
+    // the source IDENTITY ('mercator', '4326', or the sourceCrs code — two different
+    // CRSDefinition sources warp the same tile rect differently and must not collide). Runtime
+    // source swaps are additionally flushed wholesale by the tileset (see
+    // MercatorCRSTileset2D._getSource), so this key is the per-tile backstop. The tile's own
     // geometry is fixed by its identity, so it needn't be in the key.
-    const sourceMarker = source.isMercator ? 'm' : 'x';
-    const key = `${crs.code}/${resolution}/${tileSize}/${sourceMarker}`;
+    const {sourceCrs} = this.props;
+    const sourceKey = !sourceCrs ? 'mercator' : sourceCrs === 'EPSG:4326' ? '4326' : sourceCrs.code;
+    const key = `${crs.code}/${resolution}/${tileSize}/${sourceKey}`;
     tile.userData = tile.userData || {};
     const cached = tile.userData.warpedMesh as {key: string; mesh: WarpedTileMesh} | undefined;
     if (cached && cached.key === key) {
