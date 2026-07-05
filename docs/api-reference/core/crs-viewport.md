@@ -23,7 +23,8 @@ const viewport = new CRSViewport({
       forward: lnglat => converter.forward(lnglat),
       inverse: xy => converter.inverse(xy)
     },
-    extent: [166021.44, 0, 833978.56, 9329005.18],
+    // UTM zone 18N's WGS84 extent - simpler to find than the projected extent
+    extentGeographic: [-78, 0, -72, 84],
     units: 'meters'
   },
   longitude: -75.6,
@@ -50,7 +51,8 @@ Parameters:
     - `transform` (object) - WGS84 degrees ↔ CRS units:
       + `forward(lnglat: [number, number]): [number, number]` - Projects `[longitude, latitude]` in WGS84 degrees to `[x, y]` in CRS units.
       + `inverse(xy: [number, number]): [number, number]` - Unprojects `[x, y]` in CRS units to `[longitude, latitude]` in WGS84 degrees.
-    - `extent` ([number, number, number, number]) - `[minX, minY, maxX, maxY]` valid bounds in CRS units. Defines the common-space world scale.
+    - `extent` ([number, number, number, number], optional) - `[minX, minY, maxX, maxY]` valid bounds in CRS units. Defines the common-space world scale.
+    - `extentGeographic` ([number, number, number, number], optional) - `[west, south, east, north]` valid bounds in WGS84 degrees, as an alternative to `extent` for CRSs where a geographic bbox is at hand but the projected extent is not. Derived into a projected extent by densifying the boundary (~8 samples per edge) through `transform.forward` and taking the bounding box of the finite results — an approximation of the true (possibly curved) projected boundary, most accurate for the roughly-rectangular boundaries typical of UTM-class zones. Exactly one of `extent`/`extentGeographic` should be provided; if both are given, `extent` is used.
     - `units` ('meters' | 'degrees', optional) - CRS axis unit. Relates elevation (meters) and distance scales to CRS units. Default `'meters'`.
   + `id` (string, optional) - Name of the viewport.
   + `x` (number, optional) - Left offset from the canvas edge, in pixels.
@@ -80,7 +82,7 @@ Parameters:
 
 Remarks:
 
-* `crs` and its `extent` are validated on construction: the extent must be `[minX, minY, maxX, maxY]` with positive width and height, and the transform must round-trip at the extent center. An invalid extent or a non-finite round-trip throws.
+* `crs` and its `extent` (resolved from `extentGeographic` first, if `extent` is not given) are validated on construction: the extent must be `[minX, minY, maxX, maxY]` with positive width and height, and the transform must round-trip at the extent center. An invalid extent, a degenerate or under-sampled `extentGeographic` derivation, or a non-finite round-trip throws.
 * The view center is clamped into the CRS `extent` on construction, since an out-of-domain center can produce non-finite results from the transform (for example, panning past the edge of a UTM zone).
 * `latitude`/`longitude` remain in WGS84 degrees regardless of `crs`, so `{longitude, latitude, zoom, bearing, pitch}` view state is portable across CRSs — switching `crs` on a `MapView` only requires changing that one prop. Zoom's *ground* meaning does not carry over unchanged, though: it is extent-relative, so the same `zoom` number can represent a very different ground scale after the switch. See [Zoom is extent-relative](#zoom-is-extent-relative) below for the scale-preserving conversion.
 
