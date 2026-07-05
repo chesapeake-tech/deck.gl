@@ -143,12 +143,9 @@ test('getCRSHessian#UTM second-order correction reduces error by >20x within 5 d
   const jacobian = getCRSJacobian(crs, center);
   const hessian = getCRSHessian(crs, center);
 
-  // Deltas up to ~5 degrees from center, in varied directions. Deltas dominated by a
-  // single near-zero axis (e.g. [~0, 5]) are excluded: UTM's first-order error is
-  // itself near zero along the central meridian, so the *relative* improvement metric
-  // becomes numerically unstable there even though the absolute residual stays tiny -
-  // this is a property of the relative-error metric, not of the correction. The
-  // absolute bound below covers that case regardless of direction.
+  // Deltas up to ~5 degrees from center, in varied directions, including axis-aligned.
+  // At the center (2.5° east of the central meridian), axis-aligned deltas like [0, 5]
+  // have first-order error ~808 m and pass both relative and absolute bounds.
   const deltas: Array<[number, number]> = [
     [1, 1],
     [2, -1.5],
@@ -156,7 +153,9 @@ test('getCRSHessian#UTM second-order correction reduces error by >20x within 5 d
     [4, 3],
     [-5, -4],
     [5, 4.5],
-    [-4.5, 4.8]
+    [-4.5, 4.8],
+    [0, 5],
+    [5, 0]
   ];
 
   for (const [dLng, dLat] of deltas) {
@@ -214,6 +213,33 @@ test('clampLngLatToCRSExtent', () => {
   const projected = crs.transform.forward(clamped);
   expect(projected[1]).toBeGreaterThanOrEqual(crs.extent[1]);
   expect(Number.isFinite(projected[0])).toBe(true);
+});
+
+test('getCRSHessian#NaN fallback returns zero coefficients', () => {
+  // Mock CRS with domain restrictions: transform returns [NaN, NaN] outside
+  // a small box around the origin, testing the graceful degradation.
+  const restrictedCRS: CRSDefinition = {
+    code: 'TEST_RESTRICTED',
+    transform: {
+      forward: ([lng, lat]) => {
+        // Valid only in a small box around [0, 0]
+        if (Math.abs(lng) < 0.01 && Math.abs(lat) < 0.01) {
+          return [lng * 111000, lat * 111000]; // rough meters
+        }
+        return [NaN, NaN];
+      },
+      inverse: ([x, y]) => [x / 111000, y / 111000]
+    },
+    extent: [-1000000, -1000000, 1000000, 1000000],
+    units: 'meters'
+  };
+
+  const crs = normalizeCRS(restrictedCRS);
+  // Call getCRSHessian at a point near the domain boundary: most FD samples will be NaN.
+  const hessian = getCRSHessian(crs, [0.02, 0]);
+  // Verify it returned zero coefficients (graceful fallback)
+  expect(hessian.x).toEqual([0, 0, 0]);
+  expect(hessian.y).toEqual([0, 0, 0]);
 });
 
 test('getCRSDistanceScales#UTM', () => {
