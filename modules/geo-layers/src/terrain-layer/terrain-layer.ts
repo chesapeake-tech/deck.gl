@@ -20,14 +20,14 @@ import {SimpleMeshLayer} from '@deck.gl/mesh-layers';
 import type {MeshAttributes} from '@loaders.gl/schema';
 import {TerrainWorkerLoader} from '@loaders.gl/terrain';
 import TileLayer, {TileLayerProps} from '../tile-layer/tile-layer';
-import type {
-  Bounds,
-  GeoBoundingBox,
-  TileBoundingBox,
-  TileLoadProps,
-  ZRange
-} from '../tileset-2d/index';
+import type {Bounds, TileBoundingBox, TileLoadProps, ZRange} from '../tileset-2d/index';
 import {getURLFromTemplate, Tile2DHeader, URLTemplate, urlType} from '../tileset-2d/index';
+import {
+  resolveTiledTerrainBounds,
+  getOverlappedBounds,
+  MAX_LATITUDE,
+  MAX_LONGITUDE
+} from './terrain-bounds';
 
 const DUMMY_DATA = [1];
 
@@ -192,18 +192,12 @@ export default class TerrainLayer<ExtraPropsT extends {} = {}> extends Composite
     const textureUrl = texture && getURLFromTemplate(texture, tile);
 
     const {signal} = tile;
-    let bottomLeft = [0, 0] as [number, number];
-    let topRight = [0, 0] as [number, number];
-    if (viewport.isGeospatial) {
-      const bbox = tile.bbox as GeoBoundingBox;
-      bottomLeft = viewport.projectFlat([bbox.west, bbox.south]);
-      topRight = viewport.projectFlat([bbox.east, bbox.north]);
-    } else {
-      const bbox = tile.bbox as Exclude<TileBoundingBox, GeoBoundingBox>;
-      bottomLeft = [bbox.left, bbox.bottom];
-      topRight = [bbox.right, bbox.top];
-    }
-    const bounds: Bounds = [bottomLeft[0], bottomLeft[1], topRight[0], topRight[1]];
+
+    const {bounds, clampLngLat} = resolveTiledTerrainBounds(
+      tile as unknown as {bbox: TileBoundingBox; boundsCommon?: Bounds},
+      viewport
+    );
+    const overlappedBounds = getOverlappedBounds(bounds, this.props.tileSize, clampLngLat);
 
     const terrain = this.loadTerrain({
       elevationData: dataUrl,
@@ -287,6 +281,7 @@ export default class TerrainLayer<ExtraPropsT extends {} = {}> extends Composite
       meshMaxError,
       elevationDecoder,
       tileSize,
+      tileMatrixSet,
       maxZoom,
       minZoom,
       extent,
@@ -321,6 +316,7 @@ export default class TerrainLayer<ExtraPropsT extends {} = {}> extends Composite
           onViewportLoad: this.onViewportLoad.bind(this),
           zRange: this.state.zRange || null,
           tileSize,
+          tileMatrixSet,
           maxZoom,
           minZoom,
           extent,
