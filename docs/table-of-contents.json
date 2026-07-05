@@ -125,6 +125,7 @@
           "api-reference/geo-layers/terrain-layer",
           "api-reference/layers/text-layer",
           "api-reference/geo-layers/tile-layer",
+          "api-reference/geo-layers/crs-tileset-2d",
           "api-reference/geo-layers/warped-tile-layer",
           "api-reference/geo-layers/tile-3d-layer",
           "api-reference/geo-layers/trips-layer",
