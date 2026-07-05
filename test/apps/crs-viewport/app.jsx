@@ -8,7 +8,7 @@ import {createRoot} from 'react-dom/client';
 import DeckGL from '@deck.gl/react';
 import {MapView} from '@deck.gl/core';
 import {BitmapLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer} from '@deck.gl/layers';
-import {TileLayer} from '@deck.gl/geo-layers';
+import {TileLayer, _WarpedTileLayer as WarpedTileLayer} from '@deck.gl/geo-layers';
 import proj4 from 'proj4';
 
 const utm18n = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
@@ -106,6 +106,7 @@ const CONTROLS_STYLE = {
 function App() {
   const [crsName, setCrsName] = useState('UTM 18N');
   const [showTiles, setShowTiles] = useState(true);
+  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri'
 
   const tileLayers = [];
   if (showTiles) {
@@ -127,49 +128,63 @@ function App() {
         })
       );
     } else if (crsName === 'UTM 18N') {
-      // No public UTM tile server: render the tile grid itself to verify indexing
-      tileLayers.push(
-        new TileLayer({
-          id: 'utm-grid',
-          tileMatrixSet: UTM_TMS,
-          getTileData: ({index}) => index,
-          renderSubLayers: props => {
-            // Exact tile rect: inverse-project the CRS-unit corners (tile.boundsCRS)
-            const [minX, minY, maxX, maxY] = props.tile.boundsCRS;
-            const inv = UTM18N.transform.inverse;
-            const {x, y, z} = props.tile.index;
-            return [
-              new PathLayer(props, {
-                id: `${props.id}-outline`,
-                data: [
-                  {
-                    path: [
-                      inv([minX, minY]),
-                      inv([maxX, minY]),
-                      inv([maxX, maxY]),
-                      inv([minX, maxY]),
-                      inv([minX, minY])
-                    ]
-                  }
-                ],
-                getPath: d => d.path,
-                getColor: [255, 140, 0, 200],
-                widthMinPixels: 2
-              }),
-              new TextLayer(props, {
-                id: `${props.id}-label`,
-                data: [
-                  {position: inv([(minX + maxX) / 2, (minY + maxY) / 2]), text: `${z}/${x}/${y}`}
-                ],
-                getPosition: d => d.position,
-                getText: d => d.text,
-                getSize: 14,
-                getColor: [200, 100, 0, 255]
-              })
-            ];
-          }
-        })
-      );
+      if (utmBasemap === 'grid') {
+        // No public UTM tile server: render the tile grid itself to verify indexing
+        tileLayers.push(
+          new TileLayer({
+            id: 'utm-grid',
+            tileMatrixSet: UTM_TMS,
+            getTileData: ({index}) => index,
+            renderSubLayers: props => {
+              // Exact tile rect: inverse-project the CRS-unit corners (tile.boundsCRS)
+              const [minX, minY, maxX, maxY] = props.tile.boundsCRS;
+              const inv = UTM18N.transform.inverse;
+              const {x, y, z} = props.tile.index;
+              return [
+                new PathLayer(props, {
+                  id: `${props.id}-outline`,
+                  data: [
+                    {
+                      path: [
+                        inv([minX, minY]),
+                        inv([maxX, minY]),
+                        inv([maxX, maxY]),
+                        inv([minX, maxY]),
+                        inv([minX, minY])
+                      ]
+                    }
+                  ],
+                  getPath: d => d.path,
+                  getColor: [255, 140, 0, 200],
+                  widthMinPixels: 2
+                }),
+                new TextLayer(props, {
+                  id: `${props.id}-label`,
+                  data: [
+                    {position: inv([(minX + maxX) / 2, (minY + maxY) / 2]), text: `${z}/${x}/${y}`}
+                  ],
+                  getPosition: d => d.position,
+                  getText: d => d.text,
+                  getSize: 14,
+                  getColor: [200, 100, 0, 255]
+                })
+              ];
+            }
+          })
+        );
+      } else {
+        tileLayers.push(
+          new WarpedTileLayer({
+            id: `warped-${utmBasemap}`,
+            data:
+              utmBasemap === 'esri'
+                ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            tileSize: 256,
+            maxZoom: 19
+          })
+        );
+      }
     } else {
       // Web Mercator regression: default OSM indexing, no tileMatrixSet
       tileLayers.push(
@@ -237,6 +252,13 @@ function App() {
           />
           tiles
         </label>
+        {crsName === 'UTM 18N' && (
+          <select value={utmBasemap} onChange={e => setUtmBasemap(e.target.value)}>
+            <option value="grid">tile grid</option>
+            <option value="osm">OSM (warped)</option>
+            <option value="esri">Esri imagery (warped)</option>
+          </select>
+        )}
       </div>
       <DeckGL
         views={new MapView({crs: CRS_OPTIONS[crsName]})}
