@@ -28,6 +28,10 @@ Inherits all [TileLayer](./tile-layer.md) properties with these differences:
 - `tileSize` is the source tile's pixel size (256 for OSM; some services are 512).
 - `zRange` is ignored (no terrain in CRS views).
 - The default `renderSubLayers` produces a textured mesh (`SimpleMeshLayer`), not GeoJSON.
+  `renderSubLayers` remains overridable: a custom function receives the usual sublayer props
+  — including `tile` (with `bbox` and `boundsWorld`) — plus `mesh` and `origin`, the warped
+  mesh this layer builds for that tile and its common-space origin, so a replacement renderer
+  doesn't have to redo the CPU reprojection.
 
 ##### `_meshResolution` (number, optional) {#_meshresolution}
 

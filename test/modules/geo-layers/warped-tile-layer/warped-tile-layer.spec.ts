@@ -71,3 +71,65 @@ test('WarpedTileLayer#renders SimpleMeshLayer sublayers in a UTM view', async ()
     onError: err => expect(err).toBeFalsy()
   });
 });
+
+test('WarpedTileLayer#renderSubLayers prop overrides the default mesh rendering', async () => {
+  const view = new MapView({crs: UTM18N});
+  const viewport = view.makeViewport({
+    width: 800,
+    height: 600,
+    viewState: {longitude: -72, latitude: 40, zoom: 7}
+  })!;
+
+  const receivedProps: any[] = [];
+  const testCases = [
+    {
+      title: 'custom renderSubLayers',
+      props: {
+        getTileData: () => Promise.resolve(new ImageData(4, 4)),
+        renderSubLayers: (props: any) => {
+          receivedProps.push(props);
+          // A custom sublayer implementation: reuses the mesh/origin this layer built
+          // instead of the default `SimpleMeshLayer` id/props, proving the prop is honored
+          return new SimpleMeshLayer(props, {
+            id: `${props.id}-custom`,
+            data: [0],
+            mesh: props.mesh,
+            texture: props.data,
+            textureParameters: {addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge'},
+            getPosition: () => props.origin,
+            getColor: [0, 255, 0],
+            pickable: false
+          });
+        }
+      },
+      onAfterUpdate: ({subLayers}) => {
+        if (receivedProps.length > 0) {
+          // the custom renderSubLayers received the built mesh + origin (and the tile,
+          // with its bbox/boundsWorld metadata intact)
+          for (const props of receivedProps) {
+            expect(props.mesh).toBeDefined();
+            expect(props.mesh.attributes.positions.value.length).toBeGreaterThan(0);
+            expect(props.origin).toBeDefined();
+            expect(Number.isFinite(props.origin[0])).toBe(true);
+            expect(props.tile).toBeDefined();
+            expect(props.tile.bbox).toBeDefined();
+            expect((props.tile as any).boundsWorld).toBeDefined();
+          }
+          // the default SimpleMeshLayer (id ending `-warped`) is not rendered; only the
+          // custom sublayer (id ending `-custom`) is
+          const customLayers = subLayers.filter(l => l.id.endsWith('-custom'));
+          const defaultLayers = subLayers.filter(l => l.id.endsWith('-warped'));
+          expect(customLayers.length).toBeGreaterThan(0);
+          expect(defaultLayers.length).toBe(0);
+        }
+      }
+    }
+  ];
+
+  await testLayerAsync({
+    Layer: WarpedTileLayer,
+    viewport,
+    testCases,
+    onError: err => expect(err).toBeFalsy()
+  });
+});
