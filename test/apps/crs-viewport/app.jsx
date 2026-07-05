@@ -6,9 +6,12 @@
 import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import DeckGL from '@deck.gl/react';
-import {MapView} from '@deck.gl/core';
+import {COORDINATE_SYSTEM, MapView} from '@deck.gl/core';
+import {normalizeCRS, lngLatToCommon} from '@deck.gl/core/viewports/crs-utils';
 import {BitmapLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer} from '@deck.gl/layers';
-import {TileLayer, _WarpedTileLayer as WarpedTileLayer} from '@deck.gl/geo-layers';
+import {TerrainLayer, TileLayer, _WarpedTileLayer as WarpedTileLayer} from '@deck.gl/geo-layers';
+import {SimpleMeshLayer} from '@deck.gl/mesh-layers';
+import {SphereGeometry} from '@luma.gl/engine';
 import proj4 from 'proj4';
 
 const utm18n = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
@@ -77,6 +80,80 @@ const UTM_TMS = {
   })
 };
 
+// Task 4 (Phase 4 plan) verification: a CRS-native (tileMatrixSet-indexed) TerrainLayer.
+// No public UTM 18N elevation service is available for this demo, and no public Web-Mercator
+// terrain-RGB service's real tile addresses line up with our demo UTM_TMS's (x, y) indices
+// (its rows-tall-vs-columns-wide aspect ratio, needed to cover the whole zone, means most
+// (z, x, y) combos fall outside any real Mercator pyramid's valid range at that z — a 404, not
+// a registration problem). So this synthesizes each tile's mesh directly via the `fetch` prop
+// override, the same network-free pattern this repo's own tests use
+// (test/modules/geo-layers/terrain-layer-loading.spec.ts) to exercise TerrainLayer without a
+// real elevation service. It bypasses `@loaders.gl/terrain`'s image decode entirely — the
+// point of this demo is registration, not decoded content: each tile's mesh quad exactly fills
+// `loadOptions.terrain.bounds`, the same `_CRSTileset2D` `boundsCommon` rectangle Task 2's fix
+// feeds through `resolveTiledTerrainBounds`/`getOverlappedBounds`, directly checkable against
+// the graticule/state overlays below.
+function makeSyntheticTerrainMesh(bounds) {
+  const [minX, minY, maxX, maxY] = bounds;
+  // A visible, deterministic elevation ripple so pitch/rotation reveals real 3D relief.
+  const elevation = (x, y) => 400 + 400 * Math.sin(x / 50000) * Math.cos(y / 50000);
+  const corners = [
+    [minX, minY],
+    [maxX, minY],
+    [maxX, maxY],
+    [minX, maxY]
+  ];
+  const positions = new Float32Array(corners.flatMap(([x, y]) => [x, y, elevation(x, y)]));
+  const z = positions.filter((_, i) => i % 3 === 2);
+  return {
+    header: {
+      boundingBox: [
+        [minX, minY, Math.min(...z)],
+        [maxX, maxY, Math.max(...z)]
+      ]
+    },
+    mode: 4, // TRIANGLES
+    indices: {value: new Uint32Array([0, 1, 2, 0, 2, 3]), size: 1},
+    attributes: {
+      POSITION: {value: positions, size: 3},
+      NORMAL: {value: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), size: 3},
+      TEXCOORD_0: {value: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), size: 2}
+    }
+  };
+}
+
+// Task 3 (Phase 4 plan) verification: a CARTESIAN-positioned mesh, positioned app-side via the
+// CRS's own forward transform (+ Phase 1's common-space normalization, `lngLatToCommon` —
+// equivalently `viewport.projectFlat`). No new deck.gl code is involved; this proves the
+// existing pitch/bearing camera math already renders such a mesh correctly in a CRS view
+// (Decisions for review #4), matching Fathom's planned mesh-bathymetry rendering convention.
+const UTM18N_NORMALIZED = normalizeCRS(UTM18N);
+// `lngLatToCommon` returns common-space units on the "world size" scale (the whole CRS extent
+// spans roughly 0-512 units, zoom-independent — the same convention Web Mercator's world tile
+// uses), NOT raw meters. The mesh geometry's own local vertex coordinates are in that same
+// common-space unit system (CARTESIAN, unscaled) — a radius of a few units is a reasonably
+// sized, visible feature at the zone-wide view this demo defaults to.
+const PITCH_MESH_GEOMETRY = new SphereGeometry({radius: 4, nlat: 12, nlong: 12});
+const PITCH_MESH_POINTS = [
+  {lnglat: [-72, 40], elevation: 300},
+  {lnglat: [-72.05, 40.05], elevation: 900},
+  {lnglat: [-71.95, 39.95], elevation: 600}
+];
+
+function makePitchMeshLayer() {
+  return new SimpleMeshLayer({
+    id: 'pitch-mesh-demo',
+    data: PITCH_MESH_POINTS,
+    mesh: PITCH_MESH_GEOMETRY,
+    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+    getPosition: d => {
+      const [x, y] = lngLatToCommon(UTM18N_NORMALIZED, d.lnglat);
+      return [x, y, d.elevation];
+    },
+    getColor: [255, 100, 40]
+  });
+}
+
 // Graticule: a lnglat grid to make projection distortion visible
 function makeGraticule() {
   const paths = [];
@@ -106,7 +183,8 @@ const CONTROLS_STYLE = {
 function App() {
   const [crsName, setCrsName] = useState('UTM 18N');
   const [showTiles, setShowTiles] = useState(true);
-  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri'
+  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain'
+  const [showPitchMesh, setShowPitchMesh] = useState(false);
 
   const tileLayers = [];
   if (showTiles) {
@@ -172,6 +250,23 @@ function App() {
             }
           })
         );
+      } else if (utmBasemap === 'terrain') {
+        // Task 4 verification (Phase 4 plan): CRS-native tiled TerrainLayer, tileMatrixSet
+        // forwarded to _CRSTileset2D (Task 2's fix).
+        tileLayers.push(
+          new TerrainLayer({
+            id: 'utm-terrain',
+            // Placeholder template: never fetched over the network, see `fetch` override below.
+            elevationData: 'synthetic://{z}/{x}/{y}',
+            tileMatrixSet: UTM_TMS,
+            fetch: (_url, {propName, loadOptions}) =>
+              propName === 'elevationData'
+                ? Promise.resolve(makeSyntheticTerrainMesh(loadOptions.terrain.bounds))
+                : Promise.resolve(null),
+            wireframe: true,
+            color: [220, 40, 140]
+          })
+        );
       } else {
         tileLayers.push(
           new WarpedTileLayer({
@@ -207,6 +302,7 @@ function App() {
 
   const layers = [
     ...tileLayers,
+    ...(crsName === 'UTM 18N' && showPitchMesh ? [makePitchMeshLayer()] : []),
     new GeoJsonLayer({
       id: 'states',
       data: 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json',
@@ -257,7 +353,18 @@ function App() {
             <option value="grid">tile grid</option>
             <option value="osm">OSM (warped)</option>
             <option value="esri">Esri imagery (warped)</option>
+            <option value="terrain">TerrainLayer (CRS-native)</option>
           </select>
+        )}
+        {crsName === 'UTM 18N' && (
+          <label style={{marginLeft: 8}}>
+            <input
+              type="checkbox"
+              checked={showPitchMesh}
+              onChange={e => setShowPitchMesh(e.target.checked)}
+            />
+            pitch mesh (CARTESIAN)
+          </label>
         )}
       </div>
       <DeckGL
