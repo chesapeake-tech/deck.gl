@@ -11,6 +11,17 @@ import TabItem from '@theme/TabItem';
 
 This widget visualizes bearing and pitch. Click it once to reset bearing to 0, click it a second time to reset pitch to 0. Supports [MapView](../core/map-view.md) and [GlobeView](../core/globe-view.md).
 
+In a [`MapView` rendered with a non-Mercator `crs`](../core/map-view.md#crs), the widget is
+CRS-aware: `bearing: 0` points grid north up, which may differ from true (geographic) north by
+the CRS's local grid convergence angle (see
+[`CRSViewport#getConvergence`](../core/crs-viewport.md#getconvergence)). The primary needle
+still tracks grid north (consistent with what clicking the widget resets to), and a second,
+subtler tick renders alongside it showing where true north is - offset from the primary needle
+by the convergence angle at the view center. The tooltip (title on hover) also reports the
+numeric convergence value. Both are omitted when the convergence is negligible (`< 0.05°`, e.g.
+on a UTM zone's central meridian) or the view isn't CRS-based (Web Mercator and globe views have
+no grid/true-north distinction).
+
 <Tabs groupId="language">
   <TabItem value="js" label="JavaScript">
 
@@ -165,6 +176,7 @@ Learn more about how to replace icons in the [styling guide](./styling#replacing
 | `--icon-compass` | [SVG Data Url][data_url] | Custom Icon |
 | `--icon-compass-north-color` | [Color][color_url] | `rgb(240, 92, 68)` |
 | `--icon-compass-south-color` | [Color][color_url] | `rgb(204, 204, 204)` |
+| `--icon-compass-true-north-color` | [Color][color_url] | `rgb(64, 128, 255)` |
 
 [data_url]: https://developer.mozilla.org/en-US/docs/Web/CSS/url#using_a_data_url
 [color_url]: https://developer.mozilla.org/en-US/docs/Web/CSS/color_value

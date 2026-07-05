@@ -146,6 +146,38 @@ Returns:
 
 * `{x: [number, number, number], y: [number, number, number]}` - for each common-space output component, `[d²/dlng², d²/(dlng·dlat), d²/dlat²]` in common units per degree².
 
+#### `getConvergence` {#getconvergence}
+
+Returns the standard surveying grid convergence angle (γ), in degrees, at the given
+`[longitude, latitude]` position (the view center by default). `bearing: 0` on a `CRSViewport`
+points grid north up - not necessarily true (geographic) north, since a projected CRS's grid
+lines and the local meridian generally diverge away from the CRS's line(s) of true scale (e.g.
+a UTM zone's central meridian). `getConvergence` returns that divergence so applications (for
+example, a survey-oriented compass widget) can show both norths.
+
+Sign convention (matches the surveying-standard relation `True Azimuth = Grid Azimuth + γ`,
+e.g. Snyder's UTM convergence formula and the National Geodetic Survey's definition of
+convergence as "from true meridian to grid meridian"): **positive means grid north lies
+clockwise (east) of true north; equivalently, true north lies counterclockwise (west) of grid
+north.** For example, east of a UTM zone's central meridian in the Northern Hemisphere, `γ` is
+positive (grid north leans east of true north there); west of it, negative; `0` on the central
+meridian and everywhere in `'EPSG:4326'` (whose grid is always aligned with the graticule).
+
+Parameters:
+
+* `lnglat` (number[], optional) - `[longitude, latitude]` at which to evaluate the
+  convergence. Defaults to the viewport's own `[longitude, latitude]` center.
+
+Returns:
+
+* `number` - the convergence angle in degrees, signed per the convention above.
+
+```js
+const convergence = viewport.getConvergence();
+// Rotate a "true north" needle relative to the viewport's grid-north-relative bearing:
+const trueNorthScreenRotation = -(viewport.bearing + convergence);
+```
+
 #### `panByPosition` {#panbyposition}
 
 Returns a new longitude and latitude that keeps a world coordinate at a given screen pixel. Exact, via `projectFlat`/`unprojectFlat`.
