@@ -14,7 +14,7 @@ import {
 import {getTileIndicesInBounds} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {osmTile2lngLat} from '@deck.gl/geo-layers/tileset-2d/utils';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
-import {GIBS_500M_TMS} from '../tileset-2d/tms-fixtures';
+import {GIBS_500M_TMS, makeUTM18NTms, UTM_EXTENT} from '../tileset-2d/tms-fixtures';
 
 const getTileData = () => Promise.resolve(null);
 
@@ -56,6 +56,106 @@ function getIndices(tileset: MercatorCRSTileset2D, viewport: CRSViewport) {
     zRange: null
   });
 }
+
+test('MercatorCRSTileset2D#pitched bands apply zoomOffset (one level finer per +1)', () => {
+  // Regression: band level selection must thread zoomOffset through, not just fold it into
+  // the near-band clamp — otherwise +1 makes every band one level coarser than the
+  // single-level path would pick for its region.
+  const makeIndices = (zoomOffset: number) => {
+    const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 256, zoomOffset});
+    const viewport = new CRSViewport({
+      crs: UTM18N,
+      width: 800,
+      height: 600,
+      longitude: -72,
+      latitude: 40,
+      zoom: 7,
+      pitch: 65
+    });
+    return getIndices(tileset, viewport);
+  };
+  const plain = makeIndices(0);
+  const offset = makeIndices(1);
+  const levelsOf = (idx: {z: number}[]) => [...new Set(idx.map(i => i.z))].sort((a, b) => a - b);
+  expect(levelsOf(plain)).toEqual([12, 13, 14]);
+  // every band exactly one level finer — including the near band (15 = view-center level + 1)
+  expect(levelsOf(offset)).toEqual([13, 14, 15]);
+  expect(Math.max(...offset.map(i => i.z))).toBe(
+    selectMercatorSourceZoom(
+      new CRSViewport({
+        crs: UTM18N,
+        width: 800,
+        height: 600,
+        longitude: -72,
+        latitude: 40,
+        zoom: 7
+      }),
+      256,
+      1
+    )
+  );
+});
+
+test('MercatorCRSTileset2D#NaN-outside-domain sourceCrs.forward does not zero out tile selection', () => {
+  // A caller-supplied sourceCrs whose forward returns NaN outside its domain must behave like
+  // a non-finite corner (skipped), not poison the bounds min/max into selecting ZERO tiles.
+  const utmNaN = {
+    code: 'TEST:UTM-NAN',
+    units: 'meters' as const,
+    extent: UTM_EXTENT,
+    transform: {
+      forward: (lnglat: [number, number]): [number, number] =>
+        lnglat[0] < -78 || lnglat[0] > -66 ? [NaN, NaN] : UTM18N.transform.forward(lnglat),
+      inverse: (xy: [number, number]): [number, number] => UTM18N.transform.inverse(xy)
+    }
+  };
+  const tileset = new MercatorCRSTileset2D({
+    getTileData,
+    tileSize: 512,
+    sourceTileMatrixSet: makeUTM18NTms(6),
+    sourceCrs: utmNaN
+  } as any);
+  // 4326 view centered at -70: west corners (~-75.6) are inside the fake domain [-78, -66],
+  // east corners (~-64.4) are outside -> forward NaN. Two corners survive: bounded selection.
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 512,
+    height: 512,
+    longitude: -70,
+    latitude: 40,
+    zoom: 5
+  });
+  const indices = getIndices(tileset, viewport);
+  expect(indices.length).toBeGreaterThan(0);
+  // bounded path (not the whole-source fallback): a sane tile count within the small demo TMS
+  expect(indices.length).toBeLessThan(64);
+  for (const {x, y, z} of indices) {
+    expect(z).toBeGreaterThanOrEqual(0);
+    expect(z).toBeLessThan(6);
+    expect(Number.isFinite(x)).toBe(true);
+    expect(Number.isFinite(y)).toBe(true);
+  }
+});
+
+test('MercatorCRSTileset2D#runtime source swap flushes cached tiles (fresh meshes)', () => {
+  const tileset = new MercatorCRSTileset2D({getTileData, tileSize: 512});
+  const viewport = makeUTMViewport(7);
+  tileset.update(viewport);
+  const before = tileset.selectedTiles![0];
+  expect(before).toBeDefined();
+  // Simulate a layer prop change: same tileset instance, new source pyramid. Cached tiles
+  // (whose boundsWorld/meshes were computed against the Mercator source grid) must be dropped.
+  tileset.setOptions({sourceTileMatrixSet: GIBS_500M_TMS, sourceCrs: 'EPSG:4326'} as any);
+  tileset.update(viewport);
+  const after = tileset.selectedTiles!;
+  expect(after.length).toBeGreaterThan(0);
+  expect(after).not.toContain(before);
+  for (const tile of after) {
+    // fresh tile objects -> no stale userData.warpedMesh from the old source
+    expect(tile.userData?.warpedMesh).toBeUndefined();
+    expect(tile.zoom).toBeLessThan(GIBS_500M_TMS.tileMatrices.length);
+  }
+});
 
 test('MercatorCRSTileset2D#warps a non-Mercator (4326 GIBS) source in a UTM view', () => {
   const tileset = new MercatorCRSTileset2D({

@@ -33,7 +33,9 @@ Inherits all [TileLayer](./tile-layer.md) properties with these differences:
 
 An OGC TileMatrixSet describing the **source** tile pyramid, expressed in `sourceCrs` units.
 Unset, the source is the standard Web-Mercator (`{z}/{x}/{y}`) pyramid and behavior is unchanged.
-Required when `sourceCrs` is set. Index/level math is shared with `TileLayer`'s `tileMatrixSet`.
+`sourceTileMatrixSet` and `sourceCrs` must be set together — either alone throws (a TMS without
+its CRS has no defined units; a CRS without a grid has nothing to index). Index/level math is
+shared with `TileLayer`'s `tileMatrixSet`.
 
 ##### `sourceCrs` (CRSDefinition | 'EPSG:4326', optional) {#sourcecrs}
 
@@ -46,6 +48,12 @@ The CRS the source pyramid is described in, so a non-Mercator source (e.g. a 432
 - `'EPSG:4326'` — a lat/long source whose tile coordinates **are** lnglat (the identity case);
 - a `CRSDefinition` — any other source, which must carry the exact `transform.inverse`
   (source coordinates → lnglat).
+
+The definition's `transform.forward` (lnglat → source coordinates) should **clamp**
+out-of-domain input to its domain edge rather than returning `NaN` — that keeps the fetch area
+tight, the way the built-in Mercator source clamps latitude to ±85.05°. A forward that returns
+non-finite values outside its domain is tolerated (such view corners are skipped when computing
+the fetch bounds), but wastes precision when most of the view leaves the source's domain.
 
 **Scope limitation:** the source CRS must be `'EPSG:4326'` or a caller-supplied `CRSDefinition`
 with its own inverse. The layer does **not** build a general inverse-projection framework —
@@ -95,3 +103,17 @@ tile far outside a UTM zone). Pass a fixed number to override the adaptive choic
 - Source level matches ground resolution at the view center; across very wide views the
   effective source resolution drifts by Mercator's `cos(latitude)` factor.
 - Views crossing the antimeridian are not supported.
+
+## Known behavior
+
+- **Pitched views select per-region levels** (far tiles coarser, near tiles finer) instead of one
+  level for the whole view. The band dedup is a center-in-cover test: it never leaves holes, but a
+  coarse tile straddling a band seam can be kept and **double-drawn** under the finer tiles above
+  it (measured up to ~a quarter of selected tiles at pitch 65). This is visually benign for opaque
+  rasters — the finer tiles render on top — but semi-transparent tile imagery may show slightly
+  darker seams at band boundaries under high pitch. Exact-coverage dedup is future work.
+- **Pitch envelope.** Screen samples above the horizon do not unproject to `NaN` — they extrapolate
+  to finite ground positions — so tile selection relies on the horizon staying off-screen. With
+  deck's default camera the horizon enters the frame around pitch ~71°; `MapView`'s default
+  `maxPitch` of 60° keeps well inside this envelope. Geometric above-horizon detection is future
+  work for steeper custom cameras.
