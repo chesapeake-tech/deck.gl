@@ -202,7 +202,7 @@ separate specs/PRs:
   elevation sources. `SimpleMeshLayer`/`COORDINATE_SYSTEM.CARTESIAN` 3D positioning under pitch
   is verified unchanged. Warping public Web-Mercator terrain-RGB sources and generalizing
   `TerrainExtension`'s Mercator anchor math to CRS views are both future work.
-* **Delegate `MapController` constraint/normalization math to the viewport.** Currently, `applyConstraints`, `_constrainZoom`, and `maxBounds` use Web Mercator world coordinates; `MapView` mitigates this by defaulting the controller's `normalize` option to `false` for non-Mercator CRSs. Delegating the constraint math to the viewport would allow `normalize: true` and `maxBounds` to work correctly in any CRS.
+* ~~Delegate `MapController` constraint/normalization math to the viewport.~~ **Done** (D1, `feat/crs-mapview`): `applyConstraints` and `_constrainZoom` project `maxBounds` corners through the current viewport (its exact CRS transform and extent-derived common-space bounds) instead of hardcoded Web Mercator world math, so `normalize: true` and `maxBounds` now work correctly in any CRS. `MapView` no longer overrides the controller's `normalize` default for non-Mercator CRSs.
 * **Opt-in exact CPU reprojection.** An additional, non-default mode that reprojects
   `COORDINATE_SYSTEM.LNGLAT` attributes exactly via the injected transform on CPU, for
   applications that need correctness at continental extents in strongly curved CRSs and can

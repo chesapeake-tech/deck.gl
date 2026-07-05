@@ -135,11 +135,11 @@ for city/survey/regional scales for projected CRSs, and cubic (rather than quadr
 its remaining error at continental extents in strongly curved projections - e.g. in UTM
 18N, ~1-2km of error at 1,200km from the view center, down from ~100km with the affine
 term alone. Longitude wrapping
-(`repeat`) is not supported with a non-Mercator `crs`. With a non-Mercator `crs`, `MapView`
-defaults the controller's `normalize` option to `false`: `MapController`'s normalization is
-computed in Web Mercator world coordinates and would snap the view toward the equator and clamp
-zoom-out incorrectly. An explicit `controller: {normalize: ...}` still takes precedence — see
-[CRSViewport Limitations](./crs-viewport.md#limitations) for details.
+(`repeat`) is not supported with a non-Mercator `crs`. `MapController`'s `normalize`
+constraints (world-fit min zoom, `maxBounds` clamp) and `maxBounds` itself are computed
+through the view's own viewport, so they work the same way with a non-Mercator `crs` as
+they do with Web Mercator — see [CRSViewport Limitations](./crs-viewport.md#limitations)
+for details.
 
 Define the `crs` object once outside your render loop. A new object identity on every
 render creates fresh `transform` closures, which defeats `View.equals` and forces the
