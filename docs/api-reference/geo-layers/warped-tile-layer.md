@@ -43,21 +43,28 @@ clips to the wrong pyramid/matrix depth instead of erroring.
   mesh this layer builds for that tile and its common-space origin, so a replacement renderer
   doesn't have to redo the CPU reprojection.
 
-##### `_meshResolution` (number, optional) {#_meshresolution}
+##### `_meshResolution` (number | 'auto', optional) {#_meshresolution}
 
-- Default: `16`
+- Default: `'auto'`
 
 Warp grid cells per tile edge. Vertices are exact; between them the GPU interpolates linearly.
-The default is sub-pixel (≤0.15 px) for UTM-class CRSs even at continental zooms; raise it only
-for unusually curved custom CRSs.
+
+With the default `'auto'`, each tile's grid size is chosen from its measured distortion at the
+current view scale, from `{4, 8, 16, 32}`, holding a ≤0.15 px interpolation-error bound: nearly
+affine tiles (survey scales) use a coarse 4×4 grid, strongly bowed continental-zoom tiles use up
+to 32×32 (the finest, used as a best-effort fallback when even it can't reach the bound — e.g. a
+tile far outside a UTM zone). Pass a fixed number to override the adaptive choice.
 
 ## Quality and performance envelope
 
 - Warp is exact at grid vertices at any view scale (full CRS transform on CPU, float64, with
-  origin-relative float32 attributes for GPU precision).
-- Hairline seams can appear at tile borders (linear texture filtering, no gutters), and
-  momentary cracks between zoom levels while children load (`best-available` refinement shows
-  the parent underneath). Accepted tradeoffs of client-side warping.
+  origin-relative float32 attributes for GPU precision); the adaptive grid keeps the between-vertex
+  interpolation error ≤0.15 px.
+- Tile-edge seams are eliminated with a half-texel UV inset (gutter clamp): mesh UVs span
+  `[0.5/w, 1 − 0.5/w]` (w = tile texel width) so linear filtering never reaches a neighbor tile's
+  border texels. The tradeoff is that each tile image's outermost half-texel ring is cropped.
+  Momentary cracks between zoom levels while children load remain possible (`best-available`
+  refinement shows the parent underneath).
 - Source level matches ground resolution at the view center; across very wide views the
   effective source resolution drifts by Mercator's `cos(latitude)` factor.
 - Views crossing the antimeridian are not supported.
