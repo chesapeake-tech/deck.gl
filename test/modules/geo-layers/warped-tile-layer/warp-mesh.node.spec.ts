@@ -9,6 +9,7 @@ import {
   makeWebMercatorQuadTms,
   selectMercatorSourceZoom,
   buildWarpedTileMesh,
+  estimateWarpMeshResolution,
   MAX_MERCATOR_LATITUDE
 } from '@deck.gl/geo-layers/warped-tile-layer/warp-mesh';
 import {getTileBoundsCRS} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
@@ -96,12 +97,130 @@ test('buildWarpedTileMesh#exact vertices for a 4326 target', () => {
   // positions are origin-relative: vertex 0 is exactly [0, 0, 0]
   expect(mesh.attributes.positions.value[0]).toBeCloseTo(0, 6);
   expect(mesh.attributes.positions.value[1]).toBeCloseTo(0, 6);
-  // texCoords: v=0 at the image top, u/v span [0, 1]
+  // texCoords: v=0 at the image top, u/v span the full [0, 1] with no tileSize given (no inset)
   expect(mesh.attributes.texCoords.value[0]).toBe(0);
   expect(mesh.attributes.texCoords.value[1]).toBe(0);
   const last = rows * rows - 1;
   expect(mesh.attributes.texCoords.value[last * 2]).toBe(1);
   expect(mesh.attributes.texCoords.value[last * 2 + 1]).toBe(1);
+});
+
+test('buildWarpedTileMesh#half-texel UV inset (seam gutter) leaves positions unchanged', () => {
+  // Seam elimination: passing tileSize insets the UVs by half a texel so a triangle can't
+  // sample past its tile's border texels. This is a knowing update of the pre-inset assertions
+  // above — UVs now span [0.5/w, 1 - 0.5/w]; positions/indices are byte-identical to no-inset.
+  const crs = normalizeCRS(UTM18N);
+  const tms = makeWebMercatorQuadTms(256, 6);
+  const boundsWorld = getTileBoundsCRS(tms.tileMatrices[4], 5, 6);
+  const w = 256;
+  const n = 4;
+  const inset = buildWarpedTileMesh(boundsWorld, crs, n, {tileSize: w});
+  const plain = buildWarpedTileMesh(boundsWorld, crs, n);
+  const rows = n + 1;
+
+  // UVs are remapped [0,1] -> [0.5/w, 1 - 0.5/w]
+  const uv = inset.attributes.texCoords.value;
+  expect(uv[0]).toBeCloseTo(0.5 / w, 9); // i=0
+  expect(uv[1]).toBeCloseTo(0.5 / w, 9); // j=0
+  const last = rows * rows - 1;
+  expect(uv[last * 2]).toBeCloseTo(1 - 0.5 / w, 9); // i=n
+  expect(uv[last * 2 + 1]).toBeCloseTo(1 - 0.5 / w, 9); // j=n
+  // a mid vertex maps proportionally into the inset range
+  const midU = 0.5 / w + (2 / n) * ((w - 1) / w);
+  expect(uv[2 * 2]).toBeCloseTo(midU, 9); // vertex (i=2, j=0) u
+
+  // positions and indices are exactly the same as the no-inset build (only UVs move)
+  expect(inset.attributes.positions.value).toEqual(plain.attributes.positions.value);
+  expect(inset.indices.value).toEqual(plain.indices.value);
+  expect(inset.origin).toEqual(plain.origin);
+});
+
+/** Max edge-midpoint interpolation error (in screen px) of an N-grid mesh, measured against a
+ * much finer exact build (4N) as the reference for the true warped edge midpoints. */
+function actualMeshErrorPx(
+  boundsWorld: [number, number, number, number],
+  crs: ReturnType<typeof normalizeCRS>,
+  n: number,
+  pixelsPerCommonUnit: number
+): number {
+  const mesh = buildWarpedTileMesh(boundsWorld, crs, n);
+  const rows = n + 1;
+  const pos = mesh.attributes.positions.value;
+  const P = (i: number, j: number) => [
+    mesh.origin[0] + pos[(j * rows + i) * 3],
+    mesh.origin[1] + pos[(j * rows + i) * 3 + 1]
+  ];
+  const ref = buildWarpedTileMesh(boundsWorld, crs, n * 4);
+  const frows = n * 4 + 1;
+  const fpos = ref.attributes.positions.value;
+  const FP = (i: number, j: number) => [
+    ref.origin[0] + fpos[(j * frows + i) * 3],
+    ref.origin[1] + fpos[(j * frows + i) * 3 + 1]
+  ];
+  let maxDev = 0;
+  for (let j = 0; j <= n; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = P(i, j);
+      const b = P(i + 1, j);
+      const mid = FP(4 * i + 2, 4 * j);
+      maxDev = Math.max(maxDev, Math.hypot(mid[0] - (a[0] + b[0]) / 2, mid[1] - (a[1] + b[1]) / 2));
+    }
+  }
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i <= n; i++) {
+      const a = P(i, j);
+      const b = P(i, j + 1);
+      const mid = FP(4 * i, 4 * j + 2);
+      maxDev = Math.max(maxDev, Math.hypot(mid[0] - (a[0] + b[0]) / 2, mid[1] - (a[1] + b[1]) / 2));
+    }
+  }
+  return maxDev * pixelsPerCommonUnit;
+}
+
+test('estimateWarpMeshResolution#adapts grid size to tile distortion, holding the 0.15px bound', () => {
+  const crs = normalizeCRS(UTM18N);
+  const tms = makeWebMercatorQuadTms(256, 20);
+  const tileAt = (z: number): [number, number, number, number] => {
+    const x = Math.floor(((-75 + 180) / 360) * 2 ** z);
+    const y = Math.floor(2 ** z / 2); // equator row, centered on the UTM 18N meridian
+    return getTileBoundsCRS(tms.tileMatrices[z], x, y);
+  };
+
+  // A source-level tile is displayed at a view scale matched to its ground resolution
+  // (~2^(z-1) for 256px tiles). A deep, small tile (survey scale) is nearly affine -> coarse
+  // grid; a shallow, large tile (continental) bows strongly -> fine grid.
+  const lowDistortion = tileAt(9);
+  const highDistortion = tileAt(6);
+  const lowScale = 2 ** 8;
+  const highScale = 2 ** 5;
+
+  const nLow = estimateWarpMeshResolution(lowDistortion, crs, lowScale);
+  const nHigh = estimateWarpMeshResolution(highDistortion, crs, highScale);
+  // Known answers: low distortion picks the coarsest grid, high distortion a much finer one
+  expect(nLow).toBe(4);
+  expect(nHigh).toBe(16);
+  expect(nLow).toBeLessThan(nHigh);
+
+  // The ≤0.15px budget holds against the exact transform for each chosen grid size
+  expect(actualMeshErrorPx(lowDistortion, crs, nLow, lowScale)).toBeLessThanOrEqual(0.15);
+  expect(actualMeshErrorPx(highDistortion, crs, nHigh, highScale)).toBeLessThanOrEqual(0.15);
+  // ...and the coarser grid really would have blown the budget on the high-distortion tile
+  // (proving the finer choice was necessary, not gratuitous)
+  expect(actualMeshErrorPx(highDistortion, crs, 4, highScale)).toBeGreaterThan(0.15);
+});
+
+test('estimateWarpMeshResolution#falls back to the finest grid when even 32 overshoots', () => {
+  const crs = normalizeCRS(UTM18N);
+  const tms = makeWebMercatorQuadTms(256, 20);
+  // A shallow, continental tile spans far outside the UTM zone: distortion so extreme that no
+  // grid in the set meets the budget, so the estimator returns the finest (32) as a best effort.
+  const z = 2;
+  const boundsWorld = getTileBoundsCRS(
+    tms.tileMatrices[z],
+    Math.floor(2 ** z / 2),
+    Math.floor(2 ** z / 2)
+  );
+  expect(estimateWarpMeshResolution(boundsWorld, crs, 2 ** (z - 1))).toBe(32);
 });
 
 test('buildWarpedTileMesh#UTM vertices match the exact transform', () => {
