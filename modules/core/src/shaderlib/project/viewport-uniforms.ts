@@ -204,6 +204,15 @@ export type ProjectUniforms = {
   /** PROJECTION_MODE.CRS only: column-major 2x2 Jacobian of the lnglat->common
    * transform at the view center, in common units per degree */
   crsUnitsPerDegree: Vec4;
+  /** PROJECTION_MODE.CRS only: second-order (quadratic) coefficients of the common-x
+   * output, `[d2x/dlng2, d2x/dlng*dlat, d2x/dlat2, 0]`, in common units per degree^2.
+   * Combined with a per-vertex `0.5 * [dlng^2, dlng*dlat, dlat^2]` in the shader to
+   * extend the Jacobian's affine approximation with a quadratic correction term.
+   * Zero (the default) is a structural no-op for every non-CRS mode. */
+  crsUnitsPerDegree2X: Vec4;
+  /** PROJECTION_MODE.CRS only: same as {@link crsUnitsPerDegree2X} for the common-y
+   * output. */
+  crsUnitsPerDegree2Y: Vec4;
   /** 2^zoom */
   scale: number;
   wrapLongitude: boolean;
@@ -316,6 +325,8 @@ function calculateViewportUniforms({
     commonUnitsPerWorldUnit: distanceScales.unitsPerMeter as Vec3,
     commonUnitsPerWorldUnit2: DEFAULT_PIXELS_PER_UNIT2,
     crsUnitsPerDegree: [1, 0, 0, 1],
+    crsUnitsPerDegree2X: ZERO_VECTOR,
+    crsUnitsPerDegree2Y: ZERO_VECTOR,
     scale: viewport.scale, // This is the mercator scale (2 ** zoom)
     wrapLongitude: false,
 
@@ -389,6 +400,14 @@ function calculateViewportUniforms({
         getCRSJacobianAtOrigin: (origin: number[]) => Vec4;
       }
     ).getCRSJacobianAtOrigin(geospatialOrigin);
+
+    const hessian = (
+      viewport as Viewport & {
+        getCRSHessianAtOrigin: (origin: number[]) => {x: Vec3; y: Vec3};
+      }
+    ).getCRSHessianAtOrigin(geospatialOrigin);
+    uniforms.crsUnitsPerDegree2X = [hessian.x[0], hessian.x[1], hessian.x[2], 0];
+    uniforms.crsUnitsPerDegree2Y = [hessian.y[0], hessian.y[1], hessian.y[2], 0];
   }
 
   return uniforms;

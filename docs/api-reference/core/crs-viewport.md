@@ -118,11 +118,11 @@ Unprojects pixel coordinates on screen into world coordinates. Same signature as
 
 Projects/unprojects a `[longitude, latitude]` to/from common space, via `transform.forward`/`transform.inverse`. Because these CPU-side methods call the injected transform directly, `project`, `unproject`, `panByPosition`, `fitBounds`, and picking/tooltip queries are all exact in any CRS.
 
-This is distinct from how `COORDINATE_SYSTEM.LNGLAT` layer data is projected on the GPU: the vertex shader uses a local affine approximation (the view-center-relative Jacobian returned by `getCRSJacobianAtOrigin`) rather than calling the transform per vertex. That approximation is exact for `'EPSG:4326'`, sub-pixel at survey/city scales for projected CRSs, and degrades only for continental extents in strongly curved projections.
+This is distinct from how `COORDINATE_SYSTEM.LNGLAT` layer data is projected on the GPU: the vertex shader approximates the transform around the view center with a second-order (quadratic) Taylor expansion — a local affine term (the view-center-relative Jacobian returned by `getCRSJacobianAtOrigin`) plus a curvature term (the Hessian returned by `getCRSHessianAtOrigin`) — rather than calling the transform per vertex. That approximation is exact for `'EPSG:4326'` (whose transform is itself linear, so the Hessian is zero), sub-pixel at any practical zoom for survey/city/regional scales for projected CRSs, and degrades only at continental extents in strongly curved projections — where the remaining error is now cubic in distance from the view center rather than quadratic. For example, in UTM 18N at 1,200km from the view center (the distance from southern New England to the Great Lakes), the affine-only approximation misregisters by roughly 100km; adding the quadratic correction reduces that to about 1-2km, sub-pixel at practical zoom levels for that extent.
 
 #### `getCRSJacobianAtOrigin` {#getcrsjacobianatorigin}
 
-Returns the column-major 2×2 Jacobian of the lnglat-to-common transform at the given origin, in common units per degree, by finite differences of `transform.forward`. Uploaded as a shader uniform to drive the local affine approximation described above.
+Returns the column-major 2×2 Jacobian of the lnglat-to-common transform at the given origin, in common units per degree, by finite differences of `transform.forward`. Uploaded as a shader uniform to drive the local affine (first-order) term of the approximation described above.
 
 Parameters:
 
@@ -131,6 +131,18 @@ Parameters:
 Returns:
 
 * `[dX/dlng, dY/dlng, dX/dlat, dY/dlat]` - a 4-element array representing the 2×2 Jacobian.
+
+#### `getCRSHessianAtOrigin` {#getcrshessianatorigin}
+
+Returns the second-order (quadratic) coefficients of the lnglat-to-common transform at the given origin, per output component, in common units per degree². Uploaded as shader uniforms (`crsUnitsPerDegree2X`/`crsUnitsPerDegree2Y`) to drive the quadratic correction term described above: `commonXY = center + J·Δ + ½·H(Δ)`, where `Δ` is the offset from the origin in degrees. Estimated by second-order central finite differences of `transform.forward`, with a larger step than the Jacobian's (second differences amplify floating-point rounding more than first differences do). Falls back to all-zero coefficients — degrading gracefully to the first-order-only approximation — if the transform is non-finite anywhere in the finite-difference stencil (e.g. near the domain edge of the CRS).
+
+Parameters:
+
+* `origin` (number[]) - `[longitude, latitude]` at which to evaluate the Hessian.
+
+Returns:
+
+* `{x: [number, number, number], y: [number, number, number]}` - for each common-space output component, `[d²/dlng², d²/(dlng·dlat), d²/dlat²]` in common units per degree².
 
 #### `panByPosition` {#panbyposition}
 

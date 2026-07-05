@@ -18,10 +18,11 @@ import {
   lngLatToCommon,
   commonToLngLat,
   getCRSJacobian,
+  getCRSHessian,
   getCRSDistanceScales,
   clampLngLatToCRSExtent
 } from './crs-utils';
-import type {CRSDefinition, NormalizedCRS} from './crs-utils';
+import type {CRSDefinition, NormalizedCRS, CRSHessian} from './crs-utils';
 
 export type CRSViewportOptions = {
   /** Coordinate reference system to render in */
@@ -198,6 +199,15 @@ export default class CRSViewport extends Viewport {
    * approximation of this CRS. */
   getCRSJacobianAtOrigin(origin: number[]): [number, number, number, number] {
     return getCRSJacobian(this.crs, origin);
+  }
+
+  /** Second-order (quadratic) coefficients of the lnglat->common transform at the
+   * given origin, per output component, in common units per degree^2. Uploaded as
+   * shader uniforms to extend the Jacobian's affine approximation with a
+   * `+ 0.5 * H(delta)` term, reducing the local approximation error from quadratic
+   * to cubic in distance from the origin. */
+  getCRSHessianAtOrigin(origin: number[]): CRSHessian {
+    return getCRSHessian(this.crs, origin);
   }
 
   panByPosition(coords: number[], pixel: number[]): Partial<CRSViewportOptions> {

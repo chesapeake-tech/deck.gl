@@ -153,6 +153,11 @@ exact everywhere. For a projected CRS like UTM, error is sub-pixel at city/surve
 (kilometers from center) and degrades only for continental-scale views in strongly curved
 projections — a documented limit, not a correctness bug, since the Jacobian is recomputed every
 frame from the current view center and error resets to zero as the user pans toward any location.
+*Follow-up:* a second-order (Hessian/quadratic) correction term was added alongside the Jacobian
+(see `getCRSHessianAtOrigin`, `crsUnitsPerDegree2X`/`Y`), reducing the residual error from
+quadratic to cubic in distance from the view center — e.g. ~100km down to ~1-2km at 1,200km in
+UTM 18N — so continental extents now register correctly against exact per-vertex references
+(e.g. the Phase 3 warped basemap) at any practical zoom.
 
 **No dependency policy.** deck.gl core bundles no projection library. The `transform` is always
 supplied by the application (e.g. via proj4js, as shown in the `MapView.crs` docs); `'EPSG:4326'`

@@ -9,6 +9,7 @@ import {
   lngLatToCommon,
   commonToLngLat,
   getCRSJacobian,
+  getCRSHessian,
   getCRSDistanceScales,
   clampLngLatToCRSExtent,
   CRS_WORLD_SIZE
@@ -112,6 +113,74 @@ test('getCRSJacobian#UTM grid convergence', () => {
   // On the central meridian there is no convergence
   const jacobianCM = getCRSJacobian(crs, [-75, 40]);
   expect(Math.abs(jacobianCM[1] / jacobianCM[0])).toBeLessThan(1e-4);
+});
+
+test('getCRSHessian#EPSG:4326 is exactly zero', () => {
+  const crs = normalizeCRS('EPSG:4326');
+  for (const lnglat of [
+    [0, 0],
+    [30, 45],
+    [-120, -33.5]
+  ]) {
+    // EPSG:4326's transform is exactly linear (identity), so the true second
+    // derivative is zero; central finite differences leave only floating-point
+    // rounding noise (~1e-9), many orders of magnitude below any real curvature.
+    const hessian = getCRSHessian(crs, lnglat);
+    for (const coefficient of [...hessian.x, ...hessian.y]) {
+      expect(coefficient).toBeCloseTo(0, 8);
+    }
+  }
+});
+
+test('getCRSHessian#UTM second-order correction reduces error by >20x within 5 degrees', () => {
+  // Validates both the FD step-size choice (HESSIAN_STEP = 5e-3 degrees) and the
+  // shader's `commonXY + dot(crsUnitsPerDegree2{X,Y}, quadratic)` formula: reproduces
+  // it here in plain JS from getCRSJacobian/getCRSHessian, independent of the shader
+  // source (see crs-project.node.spec.ts for the shader-uniform-level version).
+  const crs = normalizeCRS(UTM18N);
+  const center: [number, number] = [-72.5, 41];
+  const centerCommon = lngLatToCommon(crs, center);
+  const jacobian = getCRSJacobian(crs, center);
+  const hessian = getCRSHessian(crs, center);
+
+  // Deltas up to ~5 degrees from center, in varied directions. Deltas dominated by a
+  // single near-zero axis (e.g. [~0, 5]) are excluded: UTM's first-order error is
+  // itself near zero along the central meridian, so the *relative* improvement metric
+  // becomes numerically unstable there even though the absolute residual stays tiny -
+  // this is a property of the relative-error metric, not of the correction. The
+  // absolute bound below covers that case regardless of direction.
+  const deltas: Array<[number, number]> = [
+    [1, 1],
+    [2, -1.5],
+    [-3, 2],
+    [4, 3],
+    [-5, -4],
+    [5, 4.5],
+    [-4.5, 4.8]
+  ];
+
+  for (const [dLng, dLat] of deltas) {
+    const target: [number, number] = [center[0] + dLng, center[1] + dLat];
+    const exact = lngLatToCommon(crs, target);
+
+    const firstOrder = [
+      centerCommon[0] + jacobian[0] * dLng + jacobian[2] * dLat,
+      centerCommon[1] + jacobian[1] * dLng + jacobian[3] * dLat
+    ];
+    const quad = [0.5 * dLng * dLng, dLng * dLat, 0.5 * dLat * dLat];
+    const secondOrder = [
+      firstOrder[0] + hessian.x[0] * quad[0] + hessian.x[1] * quad[1] + hessian.x[2] * quad[2],
+      firstOrder[1] + hessian.y[0] * quad[0] + hessian.y[1] * quad[1] + hessian.y[2] * quad[2]
+    ];
+
+    const errFirst = Math.hypot(firstOrder[0] - exact[0], firstOrder[1] - exact[1]);
+    const errSecond = Math.hypot(secondOrder[0] - exact[0], secondOrder[1] - exact[1]);
+
+    expect(errSecond).toBeLessThan(0.05 * errFirst);
+    // Absolute bound: ~1.5 common units (~2km, since 1 common unit ~= 1304m for this
+    // CRS's extent) covers the largest observed residual (~1.07) with margin.
+    expect(errSecond).toBeLessThan(1.5);
+  }
 });
 
 test('lngLatToCommon#NZTM anchor and multi-CRS round trips', () => {

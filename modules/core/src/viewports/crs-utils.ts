@@ -11,6 +11,19 @@ const METERS_PER_DEGREE = 4.003e7 / 360;
 /** Finite-difference step for Jacobian estimation, in degrees (~1 meter) */
 const JACOBIAN_STEP = 1e-5;
 
+/** Finite-difference step for Hessian (second derivative) estimation, in degrees.
+ * Second differences divide by h^2 and so amplify floating-point rounding error
+ * much more than the first-order Jacobian's h: with double precision (~1e-16 relative
+ * error) and h = JACOBIAN_STEP (1e-5), the h^2 term in the denominator (1e-10) would
+ * amplify rounding noise in `lngLatToCommon` (itself built from several floating-point
+ * operations, e.g. a full proj4 transform) to ~1e-6 absolute in the second derivative -
+ * comparable to or larger than the quadratic term we're trying to resolve at
+ * continental extents. A larger step (5e-3 degrees, ~500 m) keeps the rounding
+ * contribution negligible while still being small relative to the length scale over
+ * which the curvature of common projections varies (see crs-utils.node.spec.ts for the
+ * numerical validation of this choice, and its effect on the second-order error bound). */
+const HESSIAN_STEP = 5e-3;
+
 export type CRSTransform = {
   /** Project [longitude, latitude] in WGS84 degrees to [x, y] in CRS units */
   forward: (lnglat: [number, number]) => [number, number];
@@ -133,6 +146,67 @@ export function getCRSJacobian(
   const dLng = partialDerivative(crs, lnglat, 0);
   const dLat = partialDerivative(crs, lnglat, 1);
   return [dLng[0], dLng[1], dLat[0], dLat[1]];
+}
+
+/** Second-order (quadratic) coefficients of the lnglat->common transform at the given
+ * position, per output component: `[d2/dlng2, d2/dlng*dlat, d2/dlat2]` in common units
+ * per degree^2. Used to extend the first-order Jacobian approximation with a
+ * `+ 0.5 * H(delta)` quadratic correction term, reducing the shader's local
+ * linearization error from quadratic to cubic in distance from the origin.
+ *
+ * Estimated via second-order central finite differences (see HESSIAN_STEP for the
+ * step-size rationale). Falls back to all-zero coefficients (structurally a no-op,
+ * degrading gracefully to the first-order-only approximation) if any sample needed
+ * for the stencil is non-finite (e.g. near the domain edge of the CRS transform) -
+ * this function must never return NaN. */
+export type CRSHessian = {
+  x: [number, number, number];
+  y: [number, number, number];
+};
+
+const ZERO_HESSIAN: CRSHessian = {x: [0, 0, 0], y: [0, 0, 0]};
+
+export function getCRSHessian(crs: NormalizedCRS, lnglat: number[]): CRSHessian {
+  const h = HESSIAN_STEP;
+  const [lng, lat] = lnglat;
+
+  const center = lngLatToCommon(crs, [lng, lat]);
+  const pLngHi = lngLatToCommon(crs, [lng + h, lat]);
+  const pLngLo = lngLatToCommon(crs, [lng - h, lat]);
+  const pLatHi = lngLatToCommon(crs, [lng, lat + h]);
+  const pLatLo = lngLatToCommon(crs, [lng, lat - h]);
+  const pPP = lngLatToCommon(crs, [lng + h, lat + h]);
+  const pPM = lngLatToCommon(crs, [lng + h, lat - h]);
+  const pMP = lngLatToCommon(crs, [lng - h, lat + h]);
+  const pMM = lngLatToCommon(crs, [lng - h, lat - h]);
+
+  const samples = [center, pLngHi, pLngLo, pLatHi, pLatLo, pPP, pPM, pMP, pMM];
+  if (!samples.every(isFinite2)) {
+    return ZERO_HESSIAN;
+  }
+
+  const h2 = h * h;
+  const dLngLng: [number, number] = [
+    (pLngHi[0] - 2 * center[0] + pLngLo[0]) / h2,
+    (pLngHi[1] - 2 * center[1] + pLngLo[1]) / h2
+  ];
+  const dLatLat: [number, number] = [
+    (pLatHi[0] - 2 * center[0] + pLatLo[0]) / h2,
+    (pLatHi[1] - 2 * center[1] + pLatLo[1]) / h2
+  ];
+  const dLngLat: [number, number] = [
+    (pPP[0] - pPM[0] - pMP[0] + pMM[0]) / (4 * h2),
+    (pPP[1] - pPM[1] - pMP[1] + pMM[1]) / (4 * h2)
+  ];
+
+  const hessian: CRSHessian = {
+    x: [dLngLng[0], dLngLat[0], dLatLat[0]],
+    y: [dLngLng[1], dLngLat[1], dLatLat[1]]
+  };
+  if (![...hessian.x, ...hessian.y].every(Number.isFinite)) {
+    return ZERO_HESSIAN;
+  }
+  return hessian;
 }
 
 /** Common units per meter of elevation, derived from the meridional scale at the position.

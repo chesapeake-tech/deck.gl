@@ -99,9 +99,12 @@ const newZoom =
 extent; applications using a projected CRS with a smaller extent should set their own
 `minZoom`/`maxZoom`.
 
-Layer data in `COORDINATE_SYSTEM.LNGLAT` renders via a local affine approximation around
-the view center: exact for EPSG:4326, sub-pixel at city/survey scales for projected CRSs,
-degrading only for continental extents in strongly curved projections. Longitude wrapping
+Layer data in `COORDINATE_SYSTEM.LNGLAT` renders via a second-order (affine + quadratic)
+approximation around the view center: exact for EPSG:4326, sub-pixel at any practical zoom
+for city/survey/regional scales for projected CRSs, and cubic (rather than quadratic) in
+its remaining error at continental extents in strongly curved projections - e.g. in UTM
+18N, ~1-2km of error at 1,200km from the view center, down from ~100km with the affine
+term alone. Longitude wrapping
 (`repeat`) is not supported with a non-Mercator `crs`. With a non-Mercator `crs`, `MapView`
 defaults the controller's `normalize` option to `false`: `MapController`'s normalization is
 computed in Web Mercator world coordinates and would snap the view toward the equator and clamp
