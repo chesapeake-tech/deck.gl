@@ -4,7 +4,12 @@
 
 import {test, expect, vi} from 'vitest';
 import {testInitializeLayer} from '@deck.gl/test-utils/vitest';
-import {_CRSViewport as CRSViewport, COORDINATE_SYSTEM, log} from '@deck.gl/core';
+import {
+  _CRSViewport as CRSViewport,
+  COORDINATE_SYSTEM,
+  log,
+  WebMercatorViewport
+} from '@deck.gl/core';
 import {_WMSLayer as WMSLayer} from '@deck.gl/geo-layers';
 import {
   getCRSViewBoundsInCRSUnits,
@@ -33,7 +38,10 @@ class FakeWMSSource extends ImageSource {
 /** Mounts a WMSLayer against `viewport`, cancels its auto-scheduled initial `loadImage`
  * (debounced via `setTimeout`, which would otherwise race the manual call below), and
  * returns the layer plus its fake source and a `finalize` to clean up the LayerManager. */
-function mountWMSLayer(viewport: CRSViewport, props: Partial<{srs: string}> = {}) {
+function mountWMSLayer(
+  viewport: CRSViewport | WebMercatorViewport,
+  props: Partial<{srs: string}> = {}
+) {
   const source = new FakeWMSSource();
   const layer = new WMSLayer({
     id: 'test-wms',
@@ -223,6 +231,34 @@ test('WMSLayer#CRS view with a mismatched srs warns and falls back to LNGLAT bou
     expect((layer.state as any).bounds).toEqual(viewport.getBounds());
   } finally {
     warnSpy.mockRestore();
+    finalize();
+  }
+});
+
+test('WMSLayer#non-CRS view with srs EPSG:4326 positions the image via LNGLAT (not CARTESIAN)', async () => {
+  // Pins a pre-existing upstream bug: `renderLayers` read `lastRequestParameters.srs`, but
+  // the object actually stored (the `GetImageParameters` passed to `getImage`) only has a
+  // `crs` field, so the EPSG:4326 branch never took and `_imageCoordinateSystem` silently
+  // fell back to CARTESIAN even for a plain (non-CRS-view) 4326 WMS request.
+  const viewport = new WebMercatorViewport({
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 6
+  });
+  const {layer, source, finalize} = mountWMSLayer(viewport, {srs: 'EPSG:4326'});
+  try {
+    await layer.loadImage(viewport, 'test');
+
+    expect(source.calls).toHaveLength(1);
+    expect(source.calls[0].crs).toBe('EPSG:4326');
+    // Legacy (non-CRS) path: bounds are still LNGLAT, `boundsCoordinateSystem` unset.
+    expect((layer.state as any).boundsCoordinateSystem).toBeUndefined();
+
+    const sublayer = layer.renderLayers() as any;
+    expect(sublayer.props._imageCoordinateSystem).toBe(COORDINATE_SYSTEM.LNGLAT);
+  } finally {
     finalize();
   }
 });

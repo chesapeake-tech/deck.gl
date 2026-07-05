@@ -103,13 +103,7 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
      * `coordinateSystem` so its geometry bypasses the LNGLAT projection pipeline. Left
      * `undefined` for the pre-existing Mercator/4326 behavior (bounds in LNGLAT). */
     boundsCoordinateSystem?: CoordinateSystem;
-    lastRequestParameters: {
-      bbox: [number, number, number, number];
-      layers: string[];
-      srs: string;
-      width: number;
-      height: number;
-    };
+    lastRequestParameters: GetImageParameters;
     lastRequestId: number;
     _nextRequestId: number;
     /** TODO: Change any => setTimeout return type. Different between Node and browser... */
@@ -173,7 +167,7 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
         // rectangle in common space, linear in both the image's own pixel space and
         // (by construction) common space, so no further coordinate conversion applies.
         _imageCoordinateSystem:
-          lastRequestParameters.srs === 'EPSG:4326'
+          lastRequestParameters.crs === 'EPSG:4326'
             ? COORDINATE_SYSTEM.LNGLAT
             : COORDINATE_SYSTEM.CARTESIAN,
         // Only set in the CRS path; otherwise inherit the default (LNGLAT for a
