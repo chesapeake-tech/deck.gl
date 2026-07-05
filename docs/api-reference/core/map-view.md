@@ -74,11 +74,21 @@ const view = new MapView({
       forward: lnglat => converter.forward(lnglat),
       inverse: xy => converter.inverse(xy)
     },
-    extent: [166021.44, 0, 833978.56, 9329005.18],
+    // UTM zone 18N's WGS84 extent - simpler to find than the projected extent below
+    extentGeographic: [-78, 0, -72, 84],
     units: 'meters'
   }
 });
 ```
+
+`extent` is `[minX, minY, maxX, maxY]` in the CRS's own projected units (for UTM 18N,
+`[166021.44, 0, 833978.56, 9329005.18]`). When only a WGS84 `[west, south, east, north]` bbox
+is at hand, supply `extentGeographic` instead: it is turned into a projected `extent` by
+densifying the boundary and running it through `transform.forward`, taking the bounding box of
+the finite results. This approximates the true (possibly curved) projected boundary and is
+most accurate for the roughly-rectangular boundaries typical of UTM-class zones — prefer an
+exact `extent` when one is available. Provide at most one of `extent`/`extentGeographic`; if
+both are given, `extent` is used.
 
 The view state remains `{longitude, latitude, zoom, bearing, pitch}` regardless of CRS,
 so switching `crs` only requires changing that one prop — no other view-state field needs
