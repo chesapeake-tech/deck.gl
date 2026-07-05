@@ -13,8 +13,19 @@ import type {WarpTargetCRS, WarpedTileMesh} from './warp-mesh';
 
 /** Props `renderSubLayers` receives: the usual `TileLayer` sublayer props (including `tile`,
  * whose `bbox`/`boundsWorld` metadata describe the tile's footprint) plus the mesh this layer
- * builds for that tile — reprojected exactly on the CPU — and its common-space `origin`. */
-export type WarpedTileLayerRenderSubLayersProps<DataT = unknown> = TileLayerProps<DataT> & {
+ * builds for that tile — reprojected exactly on the CPU — and its common-space `origin`.
+ *
+ * `TileLayerProps`'s own `renderSubLayers` field is omitted here (rather than inherited via a
+ * plain intersection) because it's typed to receive the *base* `TileLayer` sublayer props. Left
+ * in place, that field would conflict with `WarpedTileLayerProps.renderSubLayers` below — which
+ * must accept this narrower, mesh/origin-carrying props type — since function properties are
+ * checked contravariantly on their parameter types. Compare `_MVTLayerProps`/`MVTLayerProps` in
+ * `mvt-layer.ts`, which uses the same `Omit<TileLayerProps<...>, '...'> & {...}` split to
+ * override a base `TileLayer` prop's type without hitting that conflict. */
+export type WarpedTileLayerRenderSubLayersProps<DataT = unknown> = Omit<
+  TileLayerProps<DataT>,
+  'renderSubLayers'
+> & {
   id: string;
   data: DataT;
   _offset: number;
