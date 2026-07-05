@@ -8,13 +8,16 @@ import {lngLatToWorld, worldToLngLat} from '@math.gl/web-mercator';
 import {
   makeWebMercatorQuadTms,
   selectMercatorSourceZoom,
+  selectWarpSourceZoom,
+  resolveWarpSource,
   buildWarpedTileMesh,
   estimateWarpMeshResolution,
   MAX_MERCATOR_LATITUDE
 } from '@deck.gl/geo-layers/warped-tile-layer/warp-mesh';
-import {getTileBoundsCRS} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
+import {getTileBoundsCRS, selectTileMatrix} from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {osmTile2lngLat} from '@deck.gl/geo-layers/tileset-2d/utils';
 import {UTM18N} from '../../core/viewports/crs-fixtures';
+import {GIBS_500M_TMS} from '../tileset-2d/tms-fixtures';
 import {normalizeCRS} from '@deck.gl/core/viewports/crs-utils';
 
 test('makeWebMercatorQuadTms#matches OSM tile math', () => {
@@ -274,4 +277,107 @@ test('buildWarpedTileMesh#neighbor tiles share identical edge vertices (seams)',
 
 test('MAX_MERCATOR_LATITUDE export', () => {
   expect(MAX_MERCATOR_LATITUDE).toBeCloseTo(85.051129, 6);
+});
+
+test('resolveWarpSource#default is the built-in Web-Mercator source (byte-equivalent)', () => {
+  const source = resolveWarpSource({tileSize: 256});
+  expect(source.isMercator).toBe(true);
+  // TMS matches makeWebMercatorQuadTms exactly (same cellSizes / matrix dims)
+  const expected = makeWebMercatorQuadTms(256, 23);
+  expect(source.tms.tileMatrices).toHaveLength(expected.tileMatrices.length);
+  expect(source.tms.tileMatrices[5].cellSize).toBe(expected.tileMatrices[5].cellSize);
+  // toLngLat is worldToLngLat; fromLngLat clamps into the Mercator domain
+  expect(source.toLngLat([256, 256])).toEqual(worldToLngLat([256, 256]));
+  expect(source.fromLngLat([0, 100])[1]).toBeLessThan(source.fromLngLat([0, 85.051129])[1] + 1e-6);
+  // a mesh built through the resolved source equals one built with no source option (default path)
+  const crs = normalizeCRS(UTM18N);
+  const boundsWorld = getTileBoundsCRS(source.tms.tileMatrices[10], 300, 380);
+  const viaSource = buildWarpedTileMesh(boundsWorld, crs, 8, {sourceToLngLat: source.toLngLat});
+  const viaDefault = buildWarpedTileMesh(boundsWorld, crs, 8);
+  expect(viaSource.attributes.positions.value).toEqual(viaDefault.attributes.positions.value);
+  expect(viaSource.origin).toEqual(viaDefault.origin);
+});
+
+test('resolveWarpSource#EPSG:4326 GIBS source warps into a UTM view with exact vertices', () => {
+  // A 4326 source's tile coordinates ARE lnglat: the source->lnglat transform is the identity,
+  // so a mesh vertex at source point p equals UTM.forward(p) in common space, exactly.
+  const source = resolveWarpSource({
+    tileSize: 512,
+    sourceTileMatrixSet: GIBS_500M_TMS,
+    sourceCrs: 'EPSG:4326'
+  });
+  expect(source.isMercator).toBe(false);
+  expect(source.toLngLat([-72, 40])).toEqual([-72, 40]); // identity
+
+  const crs = normalizeCRS(UTM18N);
+  // GIBS level 4 tile (6, 2) spans lng [-72, -54], lat [36, 54] — over the UTM 18N anchor region
+  const z = 4;
+  const boundsSource = getTileBoundsCRS(source.tms.tileMatrices[z], 6, 2);
+  expect(boundsSource[0]).toBeCloseTo(-72, 6); // west lng
+  expect(boundsSource[3]).toBeCloseTo(54, 6); // north lat
+  const n = 8;
+  const mesh = buildWarpedTileMesh(boundsSource, crs, n, {sourceToLngLat: source.toLngLat});
+
+  const k = 512 / (UTM18N.extent[2] - UTM18N.extent[0]);
+  const toCommon = (lng: number, lat: number): [number, number] => {
+    const utm = UTM18N.transform.forward([lng, lat]);
+    return [(utm[0] - UTM18N.extent[0]) * k, (utm[1] - UTM18N.extent[1]) * k];
+  };
+  const rows = n + 1;
+  const abs = (v: number) => [
+    mesh.origin[0] + mesh.attributes.positions.value[v * 3],
+    mesh.origin[1] + mesh.attributes.positions.value[v * 3 + 1]
+  ];
+  // top-left vertex (i=0, j=0) -> source (minX=-72, maxY=54) -> exact UTM
+  const tl = toCommon(boundsSource[0], boundsSource[3]);
+  expect(abs(0)[0]).toBeCloseTo(tl[0], 4);
+  expect(abs(0)[1]).toBeCloseTo(tl[1], 4);
+  // center vertex -> source tile center -> exact UTM
+  const center = (n / 2) * rows + n / 2;
+  const cc = toCommon(
+    (boundsSource[0] + boundsSource[2]) / 2,
+    (boundsSource[1] + boundsSource[3]) / 2
+  );
+  expect(abs(center)[0]).toBeCloseTo(cc[0], 4);
+  expect(abs(center)[1]).toBeCloseTo(cc[1], 4);
+});
+
+test('selectWarpSourceZoom#default source reduces to selectMercatorSourceZoom', () => {
+  const source = resolveWarpSource({tileSize: 256});
+  for (const zoom of [3, 7, 11]) {
+    const viewport = new CRSViewport({
+      crs: UTM18N,
+      width: 800,
+      height: 600,
+      longitude: -72,
+      latitude: 40,
+      zoom
+    });
+    expect(selectWarpSourceZoom(viewport as any, source, 256, 0)).toBe(
+      selectMercatorSourceZoom(viewport, 256)
+    );
+  }
+});
+
+test('selectWarpSourceZoom#4326 source matches the source cellSize at the view center', () => {
+  const source = resolveWarpSource({
+    tileSize: 512,
+    sourceTileMatrixSet: GIBS_500M_TMS,
+    sourceCrs: 'EPSG:4326'
+  });
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 2
+  });
+  // Independently reproduce the level: degrees-per-pixel at the view center, matched to the TMS.
+  const a = viewport.unproject([400, 300]);
+  const b = viewport.unproject([401, 300]);
+  const degPerPixel = Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const expected = selectTileMatrix(source.tms, degPerPixel);
+  expect(selectWarpSourceZoom(viewport as any, source, 512, 0)).toBe(expected);
+  expect(expected).toBe(7); // deepest GIBS level, this coarse source bottoms out here
 });
