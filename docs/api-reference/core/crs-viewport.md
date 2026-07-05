@@ -256,6 +256,15 @@ Returns:
   [`tileMatrixSet`](../geo-layers/tile-layer.md#tilematrixset)) correctly in CRS views;
   warping a public Web-Mercator terrain-RGB source (no `tileMatrixSet`) is not supported.
 * **`TerrainExtension`** — its anchor math assumes a Mercator viewport.
+* **Aggregation layers** (`@deck.gl/aggregation-layers`) work in CRS views:
+  `GridLayer`/`HexagonLayer`/`ScreenGridLayer`/`ContourLayer` bin/aggregate correctly
+  (cell/radius sizing already goes through the CRS-correct `distanceScales`). `HeatmapLayer`
+  also works correctly by default, but if an app explicitly overrides its `coordinateSystem`
+  prop to `'lnglat'`, its bounds-clipping guard hardcodes Web Mercator's ±85.051129° latitude
+  singularity as a constant, which is meaningless for another CRS's own valid domain (a UTM
+  zone's domain has nothing to do with that latitude) — not yet fixed. See the CRS
+  aggregation-layer audit spec (`docs/superpowers/specs/2026-07-05-crs-aggregation-audit.md`)
+  for the full per-layer trace.
 
 ## Source
 
