@@ -22,9 +22,36 @@ Inherits all [TileLayer](./tile-layer.md) properties with these differences:
 
 - `minZoom`/`maxZoom` refer to the **source** (OSM) pyramid levels. The source level is chosen
   by matching ground resolution at the view center.
-- `tileMatrixSet` does not apply (the source grid is the fixed Web-Mercator pyramid). For tile
-  services native to the view CRS, use [TileLayer with
+- `tileMatrixSet` does not apply (it describes a grid *native* to the view CRS). To warp a
+  non-Mercator **source** pyramid, use `sourceTileMatrixSet`/`sourceCrs` below. For tile services
+  native to the view CRS (no warping), use [TileLayer with
   `tileMatrixSet`](./tile-layer.md#tilematrixset) instead.
+
+##### `sourceTileMatrixSet` (TileMatrixSet, optional) {#sourcetilematrixset}
+
+- Default: the built-in WebMercatorQuad pyramid
+
+An OGC TileMatrixSet describing the **source** tile pyramid, expressed in `sourceCrs` units.
+Unset, the source is the standard Web-Mercator (`{z}/{x}/{y}`) pyramid and behavior is unchanged.
+Required when `sourceCrs` is set. Index/level math is shared with `TileLayer`'s `tileMatrixSet`.
+
+##### `sourceCrs` (CRSDefinition | 'EPSG:4326', optional) {#sourcecrs}
+
+- Default: Web Mercator
+
+The CRS the source pyramid is described in, so a non-Mercator source (e.g. a 4326
+`WorldCRS84Quad` source like NASA GIBS) can be warped into the view CRS:
+
+- unset / `null` — the built-in Web-Mercator source (today's behavior);
+- `'EPSG:4326'` — a lat/long source whose tile coordinates **are** lnglat (the identity case);
+- a `CRSDefinition` — any other source, which must carry the exact `transform.inverse`
+  (source coordinates → lnglat).
+
+**Scope limitation:** the source CRS must be `'EPSG:4326'` or a caller-supplied `CRSDefinition`
+with its own inverse. The layer does **not** build a general inverse-projection framework —
+inverting an arbitrary projection server-side is exactly what this client-side layer exists to
+avoid. Source level selection matches the source's ground resolution at the view center and works
+across source TMSs unchanged.
 
 **Careful with `minZoom`/`maxZoom` when composing this layer with a `tileMatrixSet`-driven
 `TileLayer`.** The two props are *not* the same kind of number, even though they share a name:
