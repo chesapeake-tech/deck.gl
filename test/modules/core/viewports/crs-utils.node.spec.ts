@@ -12,6 +12,7 @@ import {
   getCRSMetersJacobian,
   getCRSHessian,
   getCRSDistanceScales,
+  getCRSConvergence,
   clampLngLatToCRSExtent,
   CRS_WORLD_SIZE
 } from '@deck.gl/core/viewports/crs-utils';
@@ -354,6 +355,55 @@ test('getCRSHessian#NaN fallback returns zero coefficients', () => {
   // Verify it returned zero coefficients (graceful fallback)
   expect(hessian.x).toEqual([0, 0, 0]);
   expect(hessian.y).toEqual([0, 0, 0]);
+});
+
+test('getCRSConvergence#UTM 18N known answer at (-72, 40)', () => {
+  // 3 degrees east of the central meridian (-75) at latitude 40 in the Northern
+  // Hemisphere: gamma ~ Delta-lng * sin(lat) ~ 3 * sin(40deg) ~ 1.93deg. Per this
+  // module's documented sign convention (True Azimuth = Grid Azimuth + gamma; positive
+  // means grid north is clockwise/east of true north), gamma is positive here - the
+  // surveying-standard sign for a point east of the central meridian in the Northern
+  // Hemisphere (NGS: "convergence is positive East of the Central Meridian").
+  const crs = normalizeCRS(UTM18N);
+  const convergence = getCRSConvergence(crs, [-72, 40]);
+  expect(convergence).toBeGreaterThan(1.8);
+  expect(convergence).toBeLessThan(2.1);
+});
+
+test('getCRSConvergence#UTM 18N central meridian is ~0', () => {
+  const crs = normalizeCRS(UTM18N);
+  const convergence = getCRSConvergence(crs, [-75, 40]);
+  expect(convergence).toBeCloseTo(0, 3);
+});
+
+test('getCRSConvergence#EPSG:4326 is exactly zero everywhere', () => {
+  const crs = normalizeCRS('EPSG:4326');
+  for (const lnglat of [
+    [0, 0],
+    [30, 45],
+    [-120, -33.5],
+    [175, -60]
+  ]) {
+    expect(getCRSConvergence(crs, lnglat)).toBeCloseTo(0, 9);
+  }
+});
+
+test('getCRSConvergence#southern hemisphere flips the sign relative to the same point mirrored north', () => {
+  // Same 3deg-east-of-CM offset, but south of the equator: the sign of
+  // Delta-lng * sin(lat) flips because sin(lat) is negative, so gamma becomes negative -
+  // grid north is now counterclockwise (west) of true north instead of clockwise (east).
+  const crs = normalizeCRS(UTM18N);
+  const north = getCRSConvergence(crs, [-72, 40]);
+  const south = getCRSConvergence(crs, [-72, -40]);
+  expect(north).toBeGreaterThan(0);
+  expect(south).toBeLessThan(0);
+  expect(south).toBeCloseTo(-north, 6);
+});
+
+test('getCRSConvergence#west of the central meridian is negative', () => {
+  const crs = normalizeCRS(UTM18N);
+  const convergence = getCRSConvergence(crs, [-78, 40]);
+  expect(convergence).toBeLessThan(0);
 });
 
 test('getCRSDistanceScales#UTM', () => {

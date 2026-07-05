@@ -125,6 +125,11 @@ Define the `crs` object once outside your render loop. A new object identity on 
 render creates fresh `transform` closures, which defeats `View.equals` and forces the
 viewport to be reconstructed on every render.
 
+`bearing: 0` means grid-north (not necessarily true-north) up; see
+[`CRSViewport#getConvergence`](./crs-viewport.md#getconvergence) for the grid/true-north
+convergence angle, and [`CompassWidget`](../widgets/compass-widget.md) for a widget that
+surfaces it.
+
 See [CRSViewport](./crs-viewport.md) for the viewport implementation and its limitations.
 
 
