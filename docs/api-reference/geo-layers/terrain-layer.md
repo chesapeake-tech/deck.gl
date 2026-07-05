@@ -8,6 +8,26 @@ The `TerrainLayer` reconstructs mesh surfaces from height map images, e.g. [Mapz
 
 When `elevationData` is supplied with a URL template, i.e. a string containing `'{x}'` and `'{y}'` (or `'{-y}'` for TMS tiles), it loads terrain tiles on demand using a `TileLayer` and renders a mesh for each tile. If `elevationData` is an absolute URL, a single mesh is used, and the `bounds` prop is required to position it into the world space.
 
+## CRS views
+
+`elevationData` URL-template (tiled) sources render correctly inside a non-Mercator CRS
+[`MapView`](../core/map-view.md#crs) when [`tileMatrixSet`](./tile-layer.md#tilematrixset) is
+set — the same OGC TileMatrixSet indexing `TileLayer` already supports, reused unchanged here.
+`TerrainLayer` then composes a `tileMatrixSet`-driven `TileLayer` internally (`_CRSTileset2D`),
+and each tile's exact common-space rectangle (`boundsCommon`, an affine of the tile's native
+CRS-grid rectangle — no reprojection needed) positions its mesh precisely, with no
+reprojecting server. Elevation values are unaffected: decoded meters are baked as common-space
+Z exactly as in a Mercator view.
+
+The non-tiled single-mesh path (`bounds` prop, "world coordinates") already worked in CRS views
+before this — the caller supplies pre-projected common-space units directly, the same
+convention [`SimpleMeshLayer`](../mesh-layers/simple-mesh-layer.md) positioning uses.
+
+Not supported in CRS views: warping a public Web-Mercator terrain-RGB source (e.g. Mapbox
+Terrain-RGB, AWS/Terrarium tiles) without a `tileMatrixSet` — use a CRS-native elevation
+service, or reproject it server-side. `zRange`-based visibility culling under pitch does not
+yet account for terrain height in CRS views (a pre-existing `TileLayer`/`_CRSTileset2D`
+limitation, tracked separately).
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';

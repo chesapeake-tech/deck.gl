@@ -223,6 +223,9 @@ Returns:
 * Web-Mercator raster basemaps (OSM, Esri) render in CRS views via the experimental
   [`_WarpedTileLayer`](../geo-layers/warped-tile-layer.md) (client-side triangulated
   reprojection). `MVTLayer` and `_WMSLayer` are not yet CRS-aware.
+* **`TerrainLayer`** renders CRS-native tiled elevation sources (set
+  [`tileMatrixSet`](../geo-layers/tile-layer.md#tilematrixset)) correctly in CRS views;
+  warping a public Web-Mercator terrain-RGB source (no `tileMatrixSet`) is not supported.
 * **`TerrainExtension`** — its anchor math assumes a Mercator viewport.
 
 ## Source

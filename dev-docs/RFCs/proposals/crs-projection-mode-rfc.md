@@ -196,6 +196,12 @@ separate specs/PRs:
   target CRS on CPU and the tile texture-mapped on GPU (OpenLayers-style triangulated
   reprojection). Lets existing Web Mercator basemaps (OSM, Esri, etc.) render in any CRS without
   a reprojecting server.
+* **Phase 4 — Terrain/3D in CRS views** (implemented on this branch):
+  `TerrainLayer` forwards `tileMatrixSet` to its internal `TileLayer`, reaching `_CRSTileset2D`
+  and its exact `boundsCommon` tile rectangles — no reprojection needed for CRS-native
+  elevation sources. `SimpleMeshLayer`/`COORDINATE_SYSTEM.CARTESIAN` 3D positioning under pitch
+  is verified unchanged. Warping public Web-Mercator terrain-RGB sources and generalizing
+  `TerrainExtension`'s Mercator anchor math to CRS views are both future work.
 * **Delegate `MapController` constraint/normalization math to the viewport.** Currently, `applyConstraints`, `_constrainZoom`, and `maxBounds` use Web Mercator world coordinates; `MapView` mitigates this by defaulting the controller's `normalize` option to `false` for non-Mercator CRSs. Delegating the constraint math to the viewport would allow `normalize: true` and `maxBounds` to work correctly in any CRS.
 * **Opt-in exact CPU reprojection.** An additional, non-default mode that reprojects
   `COORDINATE_SYSTEM.LNGLAT` attributes exactly via the injected transform on CPU, for
