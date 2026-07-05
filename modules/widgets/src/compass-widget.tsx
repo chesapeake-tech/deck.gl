@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {Widget, FlyToInterpolator, WebMercatorViewport, _GlobeViewport} from '@deck.gl/core';
+import {
+  Widget,
+  FlyToInterpolator,
+  WebMercatorViewport,
+  _GlobeViewport,
+  _CRSViewport
+} from '@deck.gl/core';
 import type {Viewport, WidgetPlacement, WidgetProps} from '@deck.gl/core';
 import {render} from 'preact';
 import {Tooltip} from './lib/components/tooltip';
@@ -63,9 +69,17 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
     const viewId = this.viewId || Object.values(this.viewports)[0]?.id;
     const widgetViewport = this.viewports[viewId];
     const [rz, rx] = this.getRotation(widgetViewport);
+    // Grid-north vs. true-north convergence angle, in degrees, at the CRS view's center -
+    // null for non-CRS viewports (Web Mercator/globe have no grid/true distinction).
+    const convergence = this.getConvergence(widgetViewport);
+
+    const title =
+      convergence === null
+        ? this.props.label
+        : `${this.props.label} (grid vs. true north: ${convergence >= 0 ? '+' : ''}${convergence.toFixed(2)}°)`;
 
     const tooltipContent =
-      this.props.tooltip === false ? undefined : (this.props.tooltip ?? this.props.label);
+      this.props.tooltip === false ? undefined : (this.props.tooltip ?? title);
     const ui = (
       <div className="deck-widget-button" style={{perspective: 100}}>
         <Tooltip content={tooltipContent}>
@@ -76,10 +90,11 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
                 this.handleCompassReset(viewport);
               }
             }}
-            aria-label={this.props.label}
+            aria-label={title}
             style={{transform: `rotateX(${rx}deg)`}}
           >
             <svg fill="none" width="100%" height="100%" viewBox="0 0 26 26">
+              {/* Primary needle: always grid north (== true north outside CRS views) */}
               <g transform={`rotate(${rz},13,13)`}>
                 <path
                   d="M10 13.0001L12.9999 5L15.9997 13.0001H10Z"
@@ -90,6 +105,23 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
                   fill="var(--icon-compass-south-color, rgb(204, 204, 204))"
                 />
               </g>
+              {/* Secondary tick: true north in a CRS view, offset from the primary needle
+                  by the grid convergence angle at the view center. Omitted entirely
+                  outside CRS views (convergence === null), and also skipped when the two
+                  norths are indistinguishable at this render scale. */}
+              {convergence !== null && Math.abs(convergence) >= 0.05 && (
+                <g
+                  className="deck-widget-compass-true-north"
+                  transform={`rotate(${rz - convergence},13,13)`}
+                >
+                  <path
+                    d="M13 1.5L13 6"
+                    stroke="var(--icon-compass-true-north-color, rgb(64, 128, 255))"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </g>
+              )}
             </svg>
           </button>
         </Tooltip>
@@ -108,7 +140,7 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
   }
 
   getRotation(viewport?: Viewport) {
-    if (viewport instanceof WebMercatorViewport) {
+    if (viewport instanceof WebMercatorViewport || viewport instanceof _CRSViewport) {
       return [-viewport.bearing, viewport.pitch];
     } else if (viewport instanceof _GlobeViewport) {
       return [0, Math.max(-80, Math.min(80, viewport.latitude))];
@@ -116,9 +148,20 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
     return [0, 0];
   }
 
+  /** Grid vs. true north convergence angle, in degrees, at the CRS viewport's view
+   * center - see `CRSViewport#getConvergence` for the sign convention. `null` for any
+   * non-CRS viewport (Web Mercator and globe views have no grid/true north
+   * distinction, so the compass has nothing extra to show). */
+  getConvergence(viewport?: Viewport): number | null {
+    if (viewport instanceof _CRSViewport) {
+      return viewport.getConvergence();
+    }
+    return null;
+  }
+
   handleCompassReset(viewport: Viewport) {
     const viewId = this.viewId || viewport.id;
-    if (viewport instanceof WebMercatorViewport) {
+    if (viewport instanceof WebMercatorViewport || viewport instanceof _CRSViewport) {
       const viewState = this.getViewState(viewId);
       const resetPitch = this.getRotation(viewport)[0] === 0;
       const nextBearing = 0;

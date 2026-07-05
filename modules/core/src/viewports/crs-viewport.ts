@@ -21,6 +21,7 @@ import {
   getCRSMetersJacobian,
   getCRSHessian,
   getCRSDistanceScales,
+  getCRSConvergence,
   clampLngLatToCRSExtent
 } from './crs-utils';
 import type {CRSDefinition, NormalizedCRS, CRSHessian} from './crs-utils';
@@ -217,6 +218,15 @@ export default class CRSViewport extends Viewport {
    * to cubic in distance from the origin. */
   getCRSHessianAtOrigin(origin: number[]): CRSHessian {
     return getCRSHessian(this.crs, origin);
+  }
+
+  /** Standard surveying grid convergence angle (γ), in degrees, at the given lnglat
+   * position (the view center by default). Positive means grid north lies clockwise
+   * (east) of true north; equivalently, true north lies counterclockwise (west) of grid
+   * north. See {@link getCRSConvergence} in crs-utils.ts for the full sign-convention
+   * derivation and its surveying-standard source. */
+  getConvergence(lnglat: number[] = [this.longitude, this.latitude]): number {
+    return getCRSConvergence(this.crs, lnglat);
   }
 
   panByPosition(coords: number[], pixel: number[]): Partial<CRSViewportOptions> {

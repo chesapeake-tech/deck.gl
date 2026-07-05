@@ -98,6 +98,17 @@ test('CRSViewport#out-of-domain center is clamped, not NaN', () => {
   expect(lat).toBeGreaterThanOrEqual(-0.01);
 });
 
+test('CRSViewport#getConvergence defaults to the view center', () => {
+  const viewport = new CRSViewport({...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10});
+  const atCenter = viewport.getConvergence();
+  expect(atCenter).toBeCloseTo(viewport.getConvergence([-72, 40]), 6);
+  expect(atCenter).toBeGreaterThan(1.8);
+  expect(atCenter).toBeLessThan(2.1);
+
+  // An explicit lnglat overrides the default (central meridian, ~0 convergence)
+  expect(viewport.getConvergence([-75, 40])).toBeCloseTo(0, 3);
+});
+
 test('CRSViewport#equals', () => {
   const opts = {...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10};
   expect(new CRSViewport(opts).equals(new CRSViewport(opts))).toBe(true);

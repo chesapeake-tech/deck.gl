@@ -347,6 +347,32 @@ export function getCRSHessian(crs: NormalizedCRS, lnglat: number[]): CRSHessian 
   return hessian;
 }
 
+/** Standard surveying grid convergence angle (γ), in degrees, at the given lnglat position.
+ *
+ * Sign convention (matches the surveying-standard `True Azimuth = Grid Azimuth + γ`, e.g.
+ * Snyder's UTM convergence formula and the National Geodetic Survey's definition of
+ * convergence as "from true meridian to grid meridian"): **positive γ means grid north lies
+ * clockwise (east) of true north; equivalently, true north lies counterclockwise (west) of
+ * grid north.** For example, east of a UTM zone's central meridian in the Northern
+ * Hemisphere, meridians lean toward the central meridian as latitude increases, so true
+ * north (the local meridian tangent) points slightly west of grid north (the zone's
+ * constant-easting grid line) there - a positive γ, matching the classic
+ * `γ ≈ Δlng * sin(lat)` small-angle formula (positive when east of the central meridian in
+ * the Northern Hemisphere).
+ *
+ * Derived from {@link getCRSJacobian}'s "east" column (∂common/∂lng), which - because the
+ * Jacobian is, to first order, a conformal (rotation + isotropic scale) map - has rotated
+ * away from the common-space +X axis by exactly the same angle grid north's own +Y axis has
+ * rotated away from true north, under this sign convention. So
+ * `atan2(dY/dlng, dX/dlng)` (the east column's angle from +X, standard counterclockwise-
+ * positive convention) equals γ directly, with no extra sign flip - verified against the
+ * known UTM 18N answer in crs-utils.node.spec.ts.
+ */
+export function getCRSConvergence(crs: NormalizedCRS, lnglat: number[]): number {
+  const jacobian = getCRSJacobian(crs, lnglat);
+  return (Math.atan2(jacobian[1], jacobian[0]) * 180) / Math.PI;
+}
+
 /** Common units per meter of elevation, derived from the meridional scale at the position.
  * For a meters-based CRS this is ~commonUnitsPerCRSUnit; for a degrees CRS it accounts
  * for the degree/meter ratio. */
