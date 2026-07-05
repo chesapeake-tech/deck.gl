@@ -70,15 +70,11 @@ export type NormalizedCRS = CRSDefinition & {
  * for the ~1% tolerance this achieves against a known UTM 18N extent). */
 const EXTENT_GEOGRAPHIC_SAMPLES = 8;
 
-/** Derive a projected [minX, minY, maxX, maxY] extent from a WGS84 [west, south, east, north]
- * bbox: densify the boundary and take the bbox of the finite `transform.forward` results.
- * Throws if fewer than 4 samples are finite (the CRS's domain likely doesn't cover this
- * geographic bbox) or if the resulting bbox is degenerate. */
-function deriveExtentFromGeographic(
-  code: string,
-  transform: CRSTransform,
+/** Sample points along the four edges of a WGS84 [west, south, east, north] bbox, at
+ * `EXTENT_GEOGRAPHIC_SAMPLES` points per edge. */
+function densifyGeographicBoundary(
   extentGeographic: [number, number, number, number]
-): [number, number, number, number] {
+): [number, number][] {
   const [west, south, east, north] = extentGeographic;
   const n = EXTENT_GEOGRAPHIC_SAMPLES;
   const boundary: [number, number][] = [];
@@ -91,7 +87,15 @@ function deriveExtentFromGeographic(
     boundary.push([west, lat]); // left edge
     boundary.push([east, lat]); // right edge
   }
+  return boundary;
+}
 
+/** Bounding box of the finite `transform.forward` results over a set of lnglat samples,
+ * plus how many of them were finite. */
+function boundingBoxOfFiniteProjections(
+  boundary: [number, number][],
+  transform: CRSTransform
+): {minX: number; minY: number; maxX: number; maxY: number; finiteCount: number} {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -107,6 +111,20 @@ function deriveExtentFromGeographic(
       maxY = Math.max(maxY, xy[1]);
     }
   }
+  return {minX, minY, maxX, maxY, finiteCount};
+}
+
+/** Derive a projected [minX, minY, maxX, maxY] extent from a WGS84 [west, south, east, north]
+ * bbox: densify the boundary and take the bbox of the finite `transform.forward` results.
+ * Throws if fewer than 4 samples are finite (the CRS's domain likely doesn't cover this
+ * geographic bbox) or if the resulting bbox is degenerate. */
+function deriveExtentFromGeographic(
+  code: string,
+  transform: CRSTransform,
+  extentGeographic: [number, number, number, number]
+): [number, number, number, number] {
+  const boundary = densifyGeographicBoundary(extentGeographic);
+  const {minX, minY, maxX, maxY, finiteCount} = boundingBoxOfFiniteProjections(boundary, transform);
   if (finiteCount < 4) {
     throw new Error(
       `CRS ${code}: extentGeographic [${extentGeographic}] produced fewer than 4 finite samples ` +
