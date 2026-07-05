@@ -173,7 +173,10 @@ Returns:
 
 ### Known not to work yet (Phase 2/3 scope)
 
-* **`TileLayer`** supports CRS views via the [`tileMatrixSet` prop](../geo-layers/tile-layer.md#tilematrixset) (OGC TileMatrixSet indexing). Without it, `TileLayer` still assumes the Web Mercator tile pyramid. `MVTLayer` and `_WMSLayer` are not yet CRS-aware.
+* **`TileLayer`** supports CRS views via the [`tileMatrixSet` prop](../geo-layers/tile-layer.md#tilematrixset) (OGC TileMatrixSet indexing). Without it, `TileLayer` still assumes the Web Mercator tile pyramid.
+* Web-Mercator raster basemaps (OSM, Esri) render in CRS views via the experimental
+  [`_WarpedTileLayer`](../geo-layers/warped-tile-layer.md) (client-side triangulated
+  reprojection). `MVTLayer` and `_WMSLayer` are not yet CRS-aware.
 * **`TerrainExtension`** — its anchor math assumes a Mercator viewport.
 
 ## Source

@@ -47,3 +47,6 @@ export {Tileset2D as _Tileset2D} from './tileset-2d/index';
 export {Tile2DHeader as _Tile2DHeader} from './tileset-2d/index';
 export {CRSTileset2D as _CRSTileset2D} from './tileset-2d/index';
 export type {TileMatrixSet, TileMatrix} from './tileset-2d/index';
+
+export {default as _WarpedTileLayer} from './warped-tile-layer/warped-tile-layer';
+export type {WarpedTileLayerProps as _WarpedTileLayerProps} from './warped-tile-layer/warped-tile-layer';
