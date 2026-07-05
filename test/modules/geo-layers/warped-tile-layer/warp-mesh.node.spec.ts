@@ -57,10 +57,11 @@ test('selectMercatorSourceZoom#reduces to the OSM rule for a Mercator view', () 
 });
 
 test('selectMercatorSourceZoom#UTM view known answer', () => {
-  // UTM 18N at lat 40: ground m/px = metersPerUnit * 2^-zoom.
-  // commonUnitsPerCRSUnit = 512 / 667957.12, so at zoom 7 the view resolves
-  // ~10.2 m/px ground; OSM 256px at lat 40 resolves C*cos(40)/(256*2^z) —
-  // z should land at 12 (11.96 m/px) or 13; assert the formula's exact rounding.
+  // UTM 18N at lat 40, zoom 7: ground resolution is metersPerUnit * 2^-zoom (~10.20 m/px).
+  // Matching that against the OSM 256px pyramid's per-level resolution
+  // C*cos(lat)/(256*2^z) (C = Earth's circumference in meters) and solving for z gives a
+  // fractional level of ~13.52, which Math.round takes up to level 14 (not the
+  // naively-eyeballed 12/13 the original derivation-in-place comment estimated).
   const viewport = new CRSViewport({
     crs: UTM18N,
     width: 800,
@@ -69,13 +70,9 @@ test('selectMercatorSourceZoom#UTM view known answer', () => {
     latitude: 40,
     zoom: 7
   });
-  const g = viewport.distanceScales.metersPerUnit[0] * 2 ** -7;
-  const expected = Math.round(
-    Math.log2((40075016.686 * Math.cos((40 * Math.PI) / 180)) / (256 * g))
-  );
-  expect(selectMercatorSourceZoom(viewport, 256)).toBe(expected);
+  expect(selectMercatorSourceZoom(viewport, 256)).toBe(14);
   // zoomOffset shifts the result by exactly its value
-  expect(selectMercatorSourceZoom(viewport, 256, 1)).toBe(expected + 1);
+  expect(selectMercatorSourceZoom(viewport, 256, 1)).toBe(15);
 });
 
 test('buildWarpedTileMesh#exact vertices for a 4326 target', () => {
