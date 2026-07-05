@@ -3,6 +3,7 @@
 // Copyright (c) vis.gl contributors
 
 import {test, expect} from 'vitest';
+import {addMetersToLngLat} from '@math.gl/web-mercator';
 import {WebMercatorViewport} from '@deck.gl/core';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
@@ -62,6 +63,38 @@ test('CRS uniforms#mercator viewports are untouched', () => {
   // structural no-op, since `dot(zero, quadratic) == 0` in the shader.
   expect(uniforms.crsUnitsPerDegree2X).toEqual([0, 0, 0, 0]);
   expect(uniforms.crsUnitsPerDegree2Y).toEqual([0, 0, 0, 0]);
+  // The METER_OFFSETS meters-Jacobian uniform is zero (unused) outside PROJECTION_MODE.CRS -
+  // a structural no-op, since `mat2(0,0,0,0) * offset == vec2(0, 0)` in the shader.
+  expect(uniforms.crsUnitsPerMeter2x2).toEqual([0, 0, 0, 0]);
+});
+
+test('CRS uniforms#METER_OFFSETS jacobian is zero when coordinateSystem is not meter-offsets', () => {
+  const viewport = makeViewport();
+  const uniforms = getUniformsFromViewport({viewport, coordinateSystem: 'lnglat'});
+  // Only populated for coordinateSystem === 'meter-offsets'; every other coordinate
+  // system (including plain 'lnglat', which already gets grid convergence via
+  // crsUnitsPerDegree) leaves it at its zero default.
+  expect(uniforms.crsUnitsPerMeter2x2).toEqual([0, 0, 0, 0]);
+});
+
+test('CRS uniforms#METER_OFFSETS jacobian is populated at coordinateOrigin', () => {
+  const viewport = makeViewport();
+  const coordinateOrigin: [number, number, number] = [-72, 40, 0];
+  const uniforms = getUniformsFromViewport({
+    viewport,
+    coordinateSystem: 'meter-offsets',
+    coordinateOrigin
+  });
+  const jacobian = (
+    viewport as unknown as {
+      getCRSMetersJacobianAtOrigin: (origin: number[]) => [number, number, number, number];
+    }
+  ).getCRSMetersJacobianAtOrigin(coordinateOrigin);
+  for (let i = 0; i < 4; i++) {
+    expect(uniforms.crsUnitsPerMeter2x2[i]).toBeCloseTo(jacobian[i], 6);
+  }
+  // Convergence: off-diagonal terms are non-zero away from the central meridian
+  expect(Math.abs(uniforms.crsUnitsPerMeter2x2[1])).toBeGreaterThan(0);
 });
 
 /** JS re-implementation of the CRS shader branch in project_position(), first-order
@@ -183,5 +216,69 @@ test('CRS shader linearization#continental extent (1,200km): second-order correc
   // eslint-disable-next-line no-console
   console.log(
     `[CRS 1,200km scenario] zoom=${zoom.toFixed(3)} firstOrderError=${firstOrderErrorPixels.toFixed(1)}px secondOrderError=${secondOrderErrorPixels.toFixed(4)}px`
+  );
+});
+
+/** JS re-implementation of project_offset_() in project.glsl.ts - the generic
+ * diagonal-only (isotropic) offset path used for METER_OFFSETS/LNGLAT_OFFSETS before
+ * this change, and still used by every non-CRS projection mode. */
+function shaderProjectOffsetDiagonal(uniforms, offsetXY: [number, number]): [number, number] {
+  return [
+    uniforms.commonOrigin[0] + offsetXY[0] * uniforms.commonUnitsPerWorldUnit[0],
+    uniforms.commonOrigin[1] + offsetXY[1] * uniforms.commonUnitsPerWorldUnit[1]
+  ];
+}
+
+/** JS re-implementation of the new COORDINATE_SYSTEM_METER_OFFSETS branch added to
+ * project_position() in project.glsl.ts/project.wgsl.ts: the full 2x2 Jacobian at
+ * coordinateOrigin, in common units per meter. */
+function shaderProjectOffsetJacobian(uniforms, offsetXY: [number, number]): [number, number] {
+  const j = uniforms.crsUnitsPerMeter2x2;
+  return [
+    uniforms.commonOrigin[0] + j[0] * offsetXY[0] + j[2] * offsetXY[1],
+    uniforms.commonOrigin[1] + j[1] * offsetXY[0] + j[3] * offsetXY[1]
+  ];
+}
+
+test('CRS shader linearization#METER_OFFSETS grid convergence at 1km', () => {
+  // Reproduces the roadmap's headline scenario: a point cloud/mesh anchored at
+  // coordinateOrigin (-72, 40) - 3 degrees east of UTM 18N's central meridian, at
+  // latitude 40, where convergence is ~1.93 degrees - with a point 1000m due east of
+  // that origin in METER_OFFSETS. The pre-fix diagonal-only path drops convergence
+  // entirely (a due-east offset stays due-east in common space); the fix rotates it by
+  // the local Jacobian, matching the true CRS projection to within ~1m.
+  const origin: [number, number, number] = [-72, 40, 0];
+  const viewport = makeViewport({longitude: origin[0], latitude: origin[1]});
+  const uniforms = getUniformsFromViewport({
+    viewport,
+    coordinateSystem: 'meter-offsets',
+    coordinateOrigin: origin
+  });
+
+  const offsetMeters: [number, number] = [1000, 0];
+  const targetLngLat = addMetersToLngLat(origin, [offsetMeters[0], offsetMeters[1], 0]) as [
+    number,
+    number,
+    number
+  ];
+  const exact = viewport.projectPosition(targetLngLat);
+
+  const oldDiagonal = shaderProjectOffsetDiagonal(uniforms, offsetMeters);
+  const newJacobian = shaderProjectOffsetJacobian(uniforms, offsetMeters);
+
+  const oldErrorCommon = Math.hypot(oldDiagonal[0] - exact[0], oldDiagonal[1] - exact[1]);
+  const newErrorCommon = Math.hypot(newJacobian[0] - exact[0], newJacobian[1] - exact[1]);
+  const commonUnitsPerMeter = 512 / (UTM18N.extent[2] - UTM18N.extent[0]);
+  const oldErrorMeters = oldErrorCommon / commonUnitsPerMeter;
+  const newErrorMeters = newErrorCommon / commonUnitsPerMeter;
+
+  // Before: the diagonal-only path misses by roughly sin(1.93deg) * 1000m =~ 34m.
+  expect(oldErrorMeters).toBeGreaterThan(30);
+  expect(oldErrorMeters).toBeLessThan(40);
+  // After: the full Jacobian lands within ~1m of the exact projection.
+  expect(newErrorMeters).toBeLessThan(1);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[CRS METER_OFFSETS 1km scenario] oldError=${oldErrorMeters.toFixed(2)}m newError=${newErrorMeters.toFixed(4)}m`
   );
 });

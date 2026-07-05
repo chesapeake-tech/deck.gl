@@ -60,6 +60,7 @@ struct ProjectUniforms {
   crsUnitsPerDegree: vec4<f32>,
   crsUnitsPerDegree2X: vec4<f32>,
   crsUnitsPerDegree2Y: vec4<f32>,
+  crsUnitsPerMeter2x2: vec4<f32>,
 };
 
 @group(0) @binding(auto)
@@ -271,6 +272,36 @@ fn project_position_vec4_f64(position: vec4<f32>, position64Low: vec3<f32>) -> v
         project_size_float(position_world.z),
         position_world.w
       );
+    }
+    if (project.coordinateSystem == COORDINATE_SYSTEM_METER_OFFSETS) {
+      // Grid convergence (off-diagonal Jacobian terms) rotates offset xy the same way
+      // it rotates absolute LNGLAT positions above - apply the full 2x2 Jacobian
+      // (evaluated at coordinateOrigin, in common units per METER) instead of the
+      // generic project_offset_ path's diagonal-only commonUnitsPerWorldUnit scale.
+      // See crs-utils.ts#getCRSMetersJacobian and crs-viewport.md's Limitations section.
+      let crsMetersJacobian = mat2x2<f32>(project.crsUnitsPerMeter2x2.xy, project.crsUnitsPerMeter2x2.zw);
+      // Assumes an identity modelMatrix for xy, matching the LNGLAT branch above:
+      // position64Low.xy is folded directly into the offset here instead of being
+      // routed through modelMatrix.
+      let metersFromOrigin = position_world.xy + position64Low.xy;
+      // z (elevation) is unaffected by grid convergence (a horizontal-only effect), so
+      // it keeps the generic per-origin diagonal scale. commonUnitsPerWorldUnit2.z (the
+      // Web-Mercator-style quadratic correction) is always zero in CRS mode (see
+      // getCRSDistanceScales), so omitting it here introduces no error.
+      let z = (position_world.z + position64Low.z) * project.commonUnitsPerWorldUnit.z;
+      let commonXYMeters = crsMetersJacobian * metersFromOrigin;
+      return vec4<f32>(commonXYMeters, z, position_world.w);
+    }
+    if (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT_OFFSETS) {
+      // Degree-offsets are just deltas in lnglat space, so the same Jacobian used for
+      // absolute LNGLAT positions applies here. It is already evaluated at
+      // coordinateOrigin (not the view center) for offset coordinate systems - see
+      // getOffsetOrigin in viewport-uniforms.ts.
+      let crsJacobian = mat2x2<f32>(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      let degreesFromOrigin = position_world.xy + position64Low.xy;
+      let z = (position_world.z + position64Low.z) * project.commonUnitsPerWorldUnit.z;
+      let commonXYDegrees = crsJacobian * degreesFromOrigin;
+      return vec4<f32>(commonXYDegrees, z, position_world.w);
     }
     // CARTESIAN falls through to the origin subtraction below
   }

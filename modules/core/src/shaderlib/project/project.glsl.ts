@@ -50,6 +50,7 @@ layout(std140) uniform projectUniforms {
   vec4 crsUnitsPerDegree;
   vec4 crsUnitsPerDegree2X;
   vec4 crsUnitsPerDegree2Y;
+  vec4 crsUnitsPerMeter2x2;
 } project;
 
 
@@ -254,6 +255,34 @@ vec4 project_position(vec4 position, vec3 position64Low) {
         project_size(position_world.z),
         position_world.w
       );
+    }
+    if (project.coordinateSystem == COORDINATE_SYSTEM_METER_OFFSETS) {
+      // Grid convergence (off-diagonal Jacobian terms) rotates offset xy the same way
+      // it rotates absolute LNGLAT positions above - apply the full 2x2 Jacobian
+      // (evaluated at coordinateOrigin, in common units per METER) instead of the
+      // generic project_offset_ path's diagonal-only commonUnitsPerWorldUnit scale.
+      // See crs-utils.ts#getCRSMetersJacobian and crs-viewport.md's Limitations section.
+      mat2 crsMetersJacobian = mat2(project.crsUnitsPerMeter2x2.xy, project.crsUnitsPerMeter2x2.zw);
+      // Assumes an identity modelMatrix for xy, matching the LNGLAT branch above:
+      // position64Low.xy is folded directly into the offset here instead of being
+      // routed through modelMatrix.
+      vec2 metersFromOrigin = position_world.xy + position64Low.xy;
+      // z (elevation) is unaffected by grid convergence (a horizontal-only effect), so
+      // it keeps the generic per-origin diagonal scale. commonUnitsPerWorldUnit2.z (the
+      // Web-Mercator-style quadratic correction) is always zero in CRS mode (see
+      // getCRSDistanceScales), so omitting it here introduces no error.
+      float z = (position_world.z + position64Low.z) * project.commonUnitsPerWorldUnit.z;
+      return vec4(crsMetersJacobian * metersFromOrigin, z, position_world.w);
+    }
+    if (project.coordinateSystem == COORDINATE_SYSTEM_LNGLAT_OFFSETS) {
+      // Degree-offsets are just deltas in lnglat space, so the same Jacobian used for
+      // absolute LNGLAT positions applies here. It is already evaluated at
+      // coordinateOrigin (not the view center) for offset coordinate systems - see
+      // getOffsetOrigin in viewport-uniforms.ts.
+      mat2 crsJacobian = mat2(project.crsUnitsPerDegree.xy, project.crsUnitsPerDegree.zw);
+      vec2 degreesFromOrigin = position_world.xy + position64Low.xy;
+      float z = (position_world.z + position64Low.z) * project.commonUnitsPerWorldUnit.z;
+      return vec4(crsJacobian * degreesFromOrigin, z, position_world.w);
     }
     // CARTESIAN falls through to the origin subtraction below
   }

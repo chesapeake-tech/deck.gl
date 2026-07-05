@@ -9,6 +9,7 @@ import {
   lngLatToCommon,
   commonToLngLat,
   getCRSJacobian,
+  getCRSMetersJacobian,
   getCRSHessian,
   getCRSDistanceScales,
   clampLngLatToCRSExtent,
@@ -178,6 +179,54 @@ test('getCRSJacobian#UTM grid convergence', () => {
   // On the central meridian there is no convergence
   const jacobianCM = getCRSJacobian(crs, [-75, 40]);
   expect(Math.abs(jacobianCM[1] / jacobianCM[0])).toBeLessThan(1e-4);
+});
+
+test('getCRSMetersJacobian#UTM grid convergence at (-72, 40)', () => {
+  // Same known-answer point as 'getCRSJacobian#UTM grid convergence': 3 degrees east
+  // of the central meridian (-75) at latitude 40. gamma = atan(tan(dLng) * sin(lat))
+  // ~ 1.93 degrees. Converting the Jacobian to a per-meter basis (chain rule) must not
+  // change the convergence angle (a ratio of the two column components) or the general
+  // magnitude of the scale factor (~0.9996, the UTM central scale factor, modulo the
+  // secant-projection scale variation away from the central meridian).
+  const crs = normalizeCRS(UTM18N);
+  const jacobian = getCRSMetersJacobian(crs, [-72, 40]);
+  const convergence = Math.abs((Math.atan2(jacobian[1], jacobian[0]) * 180) / Math.PI);
+  expect(convergence).toBeGreaterThan(1.8);
+  expect(convergence).toBeLessThan(2.1);
+
+  // Scale: common units per meter east/north should each be close to the CRS's
+  // commonUnitsPerCRSUnit (1 CRS unit === 1 meter for UTM), modulo the ~0.9996 UTM
+  // central scale factor (which grows slightly away from the central meridian) and a
+  // systematic ~0.25% bias from getCRSMetersJacobian's spherical-Earth degrees-per-meter
+  // conversion (METERS_PER_DEGREE, a mean-circumference constant) versus proj4's
+  // WGS84-ellipsoid longitude scale at this latitude - both expected, not a bug.
+  const commonUnitsPerMeterEast = Math.hypot(jacobian[0], jacobian[1]);
+  const commonUnitsPerMeterNorth = Math.hypot(jacobian[2], jacobian[3]);
+  expect(commonUnitsPerMeterEast / crs.commonUnitsPerCRSUnit).toBeGreaterThan(0.995);
+  expect(commonUnitsPerMeterEast / crs.commonUnitsPerCRSUnit).toBeLessThan(1.01);
+  expect(commonUnitsPerMeterNorth / crs.commonUnitsPerCRSUnit).toBeGreaterThan(0.995);
+  expect(commonUnitsPerMeterNorth / crs.commonUnitsPerCRSUnit).toBeLessThan(1.01);
+
+  // On the central meridian there is no convergence
+  const jacobianCM = getCRSMetersJacobian(crs, [-75, 40]);
+  expect(Math.abs(jacobianCM[1] / jacobianCM[0])).toBeLessThan(1e-4);
+});
+
+test('getCRSMetersJacobian#EPSG:4326 is diagonal-only (rotation-free)', () => {
+  // EPSG:4326 (plate carrée) has no grid convergence anywhere: 1 meter east/north maps
+  // straight along the common-space x/y axes, with no off-diagonal (rotation) term.
+  const crs = normalizeCRS('EPSG:4326');
+  for (const lnglat of [
+    [0, 0],
+    [30, 45],
+    [-120, -33.5]
+  ]) {
+    const jacobian = getCRSMetersJacobian(crs, lnglat);
+    expect(jacobian[1]).toBeCloseTo(0, 9);
+    expect(jacobian[2]).toBeCloseTo(0, 9);
+    expect(jacobian[0]).toBeGreaterThan(0);
+    expect(jacobian[3]).toBeGreaterThan(0);
+  }
 });
 
 test('getCRSHessian#EPSG:4326 is exactly zero', () => {

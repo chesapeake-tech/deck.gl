@@ -18,6 +18,7 @@ import {
   lngLatToCommon,
   commonToLngLat,
   getCRSJacobian,
+  getCRSMetersJacobian,
   getCRSHessian,
   getCRSDistanceScales,
   clampLngLatToCRSExtent
@@ -199,6 +200,14 @@ export default class CRSViewport extends Viewport {
    * approximation of this CRS. */
   getCRSJacobianAtOrigin(origin: number[]): [number, number, number, number] {
     return getCRSJacobian(this.crs, origin);
+  }
+
+  /** Column-major 2x2 Jacobian of the lnglat->common transform at the given origin, in
+   * common units per METER (east, north). Uploaded as a shader uniform so
+   * `COORDINATE_SYSTEM.METER_OFFSETS` data anchored at this origin picks up grid
+   * convergence, the same way {@link getCRSJacobianAtOrigin} does for `LNGLAT`. */
+  getCRSMetersJacobianAtOrigin(origin: number[]): [number, number, number, number] {
+    return getCRSMetersJacobian(this.crs, origin);
   }
 
   /** Second-order (quadratic) coefficients of the lnglat->common transform at the

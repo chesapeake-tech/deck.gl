@@ -213,6 +213,13 @@ export type ProjectUniforms = {
   /** PROJECTION_MODE.CRS only: same as {@link crsUnitsPerDegree2X} for the common-y
    * output. */
   crsUnitsPerDegree2Y: Vec4;
+  /** PROJECTION_MODE.CRS + COORDINATE_SYSTEM.METER_OFFSETS only: column-major 2x2
+   * Jacobian of the lnglat->common transform at `coordinateOrigin`, in common units
+   * per METER (rather than per degree, as {@link crsUnitsPerDegree} is). Applies grid
+   * convergence to meter offsets the way `crsUnitsPerDegree` applies it to absolute
+   * LNGLAT positions. Zero (the default) is a structural no-op for every other
+   * projection mode / coordinate system combination. */
+  crsUnitsPerMeter2x2: Vec4;
   /** 2^zoom */
   scale: number;
   wrapLongitude: boolean;
@@ -327,6 +334,7 @@ function calculateViewportUniforms({
     crsUnitsPerDegree: [1, 0, 0, 1],
     crsUnitsPerDegree2X: ZERO_VECTOR,
     crsUnitsPerDegree2Y: ZERO_VECTOR,
+    crsUnitsPerMeter2x2: ZERO_VECTOR,
     scale: viewport.scale, // This is the mercator scale (2 ** zoom)
     wrapLongitude: false,
 
@@ -352,6 +360,16 @@ function calculateViewportUniforms({
       case 'meter-offsets':
         uniforms.commonUnitsPerWorldUnit = distanceScalesAtOrigin.unitsPerMeter;
         uniforms.commonUnitsPerWorldUnit2 = distanceScalesAtOrigin.unitsPerMeter2;
+        if (viewport.projectionMode === PROJECTION_MODE.CRS) {
+          // The diagonal commonUnitsPerWorldUnit above cannot represent grid
+          // convergence at coordinateOrigin; upload the full 2x2 Jacobian in
+          // common-units-per-meter so the shader can apply it to offset xy.
+          uniforms.crsUnitsPerMeter2x2 = (
+            viewport as Viewport & {
+              getCRSMetersJacobianAtOrigin: (origin: number[]) => Vec4;
+            }
+          ).getCRSMetersJacobianAtOrigin(geospatialOrigin);
+        }
         break;
 
       case 'lnglat':
