@@ -229,6 +229,37 @@ export default class CRSViewport extends Viewport {
     return getCRSConvergence(this.crs, lnglat);
   }
 
+  /** Clamp an arbitrary lnglat into this CRS's valid domain, safely: non-finite
+   * components are replaced first (so the transform is never called with a non-finite
+   * input), then the result is clamped into `crs.extent` the same way the view center
+   * is clamped on construction/pan. Used by `MapController` (D1) to generalize
+   * `maxBounds` beyond Web Mercator: the library's own default `maxBounds` spans the
+   * whole globe (`±90` latitude, `±Infinity` longitude), which is out of domain for
+   * most CRSs and would otherwise reach the transform with non-finite input. */
+  clampLngLatToDomain(lnglat: number[]): [number, number] {
+    const safeLngLat: [number, number] = [
+      Number.isFinite(lnglat[0]) ? lnglat[0] : 0,
+      Number.isFinite(lnglat[1]) ? lnglat[1] : 0
+    ];
+    return clampLngLatToCRSExtent(this.crs, safeLngLat);
+  }
+
+  /** This CRS's full `extent`, expressed as a common-space bounding box at zoom 0:
+   * `[minX, minY, maxX, maxY]`. Always `[0, 0, 512, height]` (the extent's width always
+   * maps to the 512-unit common-space world, see `CRS_WORLD_SIZE`/`commonUnitsPerCRSUnit`
+   * in crs-utils.ts); `height` depends on the extent's aspect ratio. Used by
+   * `MapController` (D1) as the CRS analog of Web Mercator's fixed `[0, 512]` world
+   * height when generalizing the `maxBounds`/zoom-fit clamps. */
+  getCommonSpaceExtent(): [number, number, number, number] {
+    const {extent, commonUnitsPerCRSUnit} = this.crs;
+    return [
+      0,
+      0,
+      (extent[2] - extent[0]) * commonUnitsPerCRSUnit,
+      (extent[3] - extent[1]) * commonUnitsPerCRSUnit
+    ];
+  }
+
   panByPosition(coords: number[], pixel: number[]): Partial<CRSViewportOptions> {
     const fromLocation = pixelsToWorld(pixel, this.pixelUnprojectionMatrix);
     const toLocation = this.projectFlat(coords);
