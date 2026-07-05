@@ -24,11 +24,16 @@ export type TileMatrix = {
   matrixHeight: number;
 };
 
+/** An OGC CRS identifier: a plain code, an OGC CRS URI/URN, or a TMS 2.0 `{uri}` object.
+ * See `normalizeCrsCode` for the accepted shapes. */
+export type CrsIdentifier = string | {uri: string};
+
 /** An OGC two-dimensional TileMatrixSet (subset of TMS 2.0) */
 export type TileMatrixSet = {
   id?: string;
-  /** CRS identifier, e.g. 'EPSG:32618' or an OGC CRS URI. Checked against the view CRS. */
-  crs?: string;
+  /** CRS identifier, e.g. `'EPSG:32618'`, an OGC CRS URI/URN, or a TMS 2.0 `{uri}` object.
+   * Checked against the view CRS (see `normalizeCrsCode`). */
+  crs?: CrsIdentifier;
   /** Tile matrices ordered coarse to fine (strictly decreasing cellSize) */
   tileMatrices: TileMatrix[];
 };
@@ -50,12 +55,45 @@ export type NormalizedTileMatrix = {
 
 export type NormalizedTileMatrixSet = {
   id?: string;
+  /** Normalized to a plain `AUTHORITY:CODE` string by `normalizeCrsCode`, regardless of the
+   * input `TileMatrixSet.crs` shape. */
   crs?: string;
   tileMatrices: NormalizedTileMatrix[];
 };
 
 /** OGC standardized rendering pixel size: 0.28 mm */
 const OGC_PIXEL_SIZE_M = 0.28e-3;
+
+/** OGC CRS URI: `http(s)://www.opengis.net/def/crs/{authority}/{version}/{code}` */
+const CRS_URI_RE = /^https?:\/\/www\.opengis\.net\/def\/crs\/([^/]+)\/[^/]*\/([^/]+)\/?$/i;
+/** OGC CRS URN: `urn:ogc:def:crs:{authority}:{version}:{code}` (version is often empty) */
+const CRS_URN_RE = /^urn:ogc:def:crs:([^:]+):[^:]*:([^:]+)$/i;
+
+/** Extracts a plain `AUTHORITY:CODE` string (e.g. `'EPSG:32619'`) from an OGC CRS identifier,
+ * for comparison against the view CRS's code — this is the only use of the extracted value, so
+ * it is never used for coordinate transforms.
+ *
+ * Accepts:
+ * - a plain code: `'EPSG:32619'` (returned unchanged)
+ * - an OGC CRS URI: `'http://www.opengis.net/def/crs/EPSG/0/32619'`
+ * - an OGC CRS URN: `'urn:ogc:def:crs:EPSG::32619'`
+ * - a TMS 2.0 `{uri: string}` CRS object (the URI is unwrapped, then parsed as above)
+ *
+ * An unrecognized string shape is returned unchanged (documented passthrough, matching the
+ * pre-existing behavior of this normalization, which never throws on `tileMatrixSet.crs`) —
+ * a genuine mismatch still surfaces via the CRS-match warning that consumes this value. */
+export function normalizeCrsCode(crs: CrsIdentifier): string {
+  const raw = typeof crs === 'string' ? crs : crs.uri;
+  const uriMatch = raw.match(CRS_URI_RE);
+  if (uriMatch) {
+    return `${uriMatch[1].toUpperCase()}:${uriMatch[2]}`;
+  }
+  const urnMatch = raw.match(CRS_URN_RE);
+  if (urnMatch) {
+    return `${urnMatch[1].toUpperCase()}:${urnMatch[2]}`;
+  }
+  return raw;
+}
 
 /** Resolve cellSize/cornerOfOrigin, precompute tile spans, and validate level ordering.
  * `metersPerUnit` converts scaleDenominator to CRS units: 1 for meters CRSs,
@@ -100,7 +138,11 @@ export function normalizeTileMatrixSet(
       throw new Error('TileMatrixSet: tileMatrices must be ordered coarse to fine');
     }
   }
-  return {id: tms.id, crs: tms.crs, tileMatrices: normalized};
+  return {
+    id: tms.id,
+    crs: tms.crs !== undefined ? normalizeCrsCode(tms.crs) : undefined,
+    tileMatrices: normalized
+  };
 }
 
 /** Index of the tile matrix whose cellSize best matches the target resolution.

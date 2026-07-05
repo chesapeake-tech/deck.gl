@@ -25,6 +25,16 @@ Inherits all [TileLayer](./tile-layer.md) properties with these differences:
 - `tileMatrixSet` does not apply (the source grid is the fixed Web-Mercator pyramid). For tile
   services native to the view CRS, use [TileLayer with
   `tileMatrixSet`](./tile-layer.md#tilematrixset) instead.
+
+**Careful with `minZoom`/`maxZoom` when composing this layer with a `tileMatrixSet`-driven
+`TileLayer`.** The two props are *not* the same kind of number, even though they share a name:
+on `_WarpedTileLayer` they index the **source Web-Mercator pyramid** (e.g. `maxZoom: 19` means
+"OSM zoom 19 is this service's deepest level"), while on `TileLayer` with `tileMatrixSet` set,
+they index **array positions in `tileMatrixSet.tileMatrices`** (e.g. `maxZoom: 7` means "the
+last, finest entry in that array"). An app that overlays a warped OSM basemap (`_WarpedTileLayer`)
+with a native-CRS vector or raster `TileLayer` (`tileMatrixSet`) should set each layer's
+`minZoom`/`maxZoom` from its own numbering — copying one layer's values onto the other silently
+clips to the wrong pyramid/matrix depth instead of erroring.
 - `tileSize` is the source tile's pixel size (256 for OSM; some services are 512).
 - `zRange` is ignored (no terrain in CRS views).
 - The default `renderSubLayers` produces a textured mesh (`SimpleMeshLayer`), not GeoJSON.
