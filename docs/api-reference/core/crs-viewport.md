@@ -10,23 +10,22 @@ Common space is the CRS plane: the CRS's own units, offset so that the extent mi
 
 ```js
 import proj4 from 'proj4';
-import {_CRSViewport as CRSViewport} from '@deck.gl/core';
+import {_CRSViewport as CRSViewport, _createProj4CRS as createProj4CRS} from '@deck.gl/core';
 
 const converter = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
 
 const viewport = new CRSViewport({
   width: 600,
   height: 400,
-  crs: {
+  // Builds the CRSDefinition from the proj4 converter, so it doesn't need to be
+  // hand-written - see `_createProj4CRS` below.
+  crs: createProj4CRS({
     code: 'EPSG:32618',
-    transform: {
-      forward: lnglat => converter.forward(lnglat),
-      inverse: xy => converter.inverse(xy)
-    },
+    converter,
     // UTM zone 18N's WGS84 extent - simpler to find than the projected extent
     extentGeographic: [-78, 0, -72, 84],
     units: 'meters'
-  },
+  }),
   longitude: -75.6,
   latitude: 39.9,
   zoom: 10
@@ -87,6 +86,36 @@ Remarks:
 * `latitude`/`longitude` remain in WGS84 degrees regardless of `crs`, so `{longitude, latitude, zoom, bearing, pitch}` view state is portable across CRSs — switching `crs` on a `MapView` only requires changing that one prop. Zoom's *ground* meaning does not carry over unchanged, though: it is extent-relative, so the same `zoom` number can represent a very different ground scale after the switch. See [Zoom is extent-relative](#zoom-is-extent-relative) below for the scale-preserving conversion.
 
 Inherits all [Viewport methods](./viewport.md#methods).
+
+## `_createProj4CRS`
+
+```js
+import {_createProj4CRS as createProj4CRS} from '@deck.gl/core';
+
+createProj4CRS(options: CreateProj4CRSOptions): CRSDefinition;
+```
+
+Builds a `CRSDefinition` from a proj4-style converter, so it doesn't have to be hand-written
+around every `crs`. `@deck.gl/core` does not bundle a projection library — `converter` is
+supplied by the caller, so this stays a zero-dependency helper.
+
+Parameters (`CreateProj4CRSOptions`):
+
+* `code` (string) - Identifier, e.g. `'EPSG:32618'`. Passed through to `CRSDefinition#code`.
+* `converter` (object) - A proj4-style converter. Either naming convention is accepted and
+  normalized to `CRSDefinition#transform`:
+  + proj4's own `Converter` shape: `forward(lnglat): [x, y]` / `inverse(xy): [lng, lat]`.
+  + `@math.gl/proj4`'s `Proj4Projection` shape: `project(lnglat): [x, y]` / `unproject(xy): [lng, lat]`.
+* `extent` ([number, number, number, number], optional) - Passed through to
+  `CRSDefinition#extent`. Exactly one of `extent`/`extentGeographic` is required.
+* `extentGeographic` ([number, number, number, number], optional) - Passed through to
+  `CRSDefinition#extentGeographic` untouched — `createProj4CRS` does no derivation itself;
+  the projected extent is still derived from it lazily, by `CRSViewport`/`normalizeCRS`, the
+  same as when `extentGeographic` is set by hand.
+* `units` ('meters' | 'degrees', optional) - Passed through to `CRSDefinition#units`.
+
+Returns a plain `CRSDefinition` object — anything that accepts one (`MapView({crs})`,
+`CRSViewport({crs})`) accepts `createProj4CRS`'s result directly.
 
 ## Zoom is extent-relative
 
