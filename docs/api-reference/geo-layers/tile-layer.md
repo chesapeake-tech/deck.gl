@@ -293,9 +293,13 @@ const layer = new TileLayer({
 
 Each tile matrix is `{id, cellSize (or scaleDenominator), pointOfOrigin, cornerOfOrigin?,
 tileWidth, tileHeight, matrixWidth, matrixHeight}` — a subset of OGC TileMatrixSet 2.0. Levels
-must be ordered coarse to fine. In URL templates, `{z}` substitutes the level's array position
-and `{tm}` the tile matrix `id` string. Tiles additionally expose `boundsCRS` (the exact tile
-rect in CRS units) and `boundsCommon` (the same rect in deck's common space, for exact
+must be ordered coarse to fine. `tileMatrixSet.crs` accepts a plain code (`'EPSG:32619'`), an
+OGC CRS URI (`'http://www.opengis.net/def/crs/EPSG/0/32619'`) or URN
+(`'urn:ogc:def:crs:EPSG::32619'`) as emitted by TiTiler/OGC APIs, or a TMS 2.0 `{uri: string}`
+object — all are normalized to the plain code for the CRS-match check against the view. In URL
+templates, `{z}` substitutes the level's array position and `{tm}` the tile matrix `id` string.
+Tiles additionally expose `boundsCRS` (the exact tile rect in CRS units) and `boundsCommon` (the
+same rect in deck's common space, for exact
 positioning of raster sublayers with `COORDINATE_SYSTEM.CARTESIAN`). The TMS must be defined in
 the same CRS as the view. Define the object once outside the render loop.
 
@@ -304,7 +308,11 @@ the same CRS as the view. Define the object once outside the render loop.
 Prop semantics with `tileMatrixSet`:
 
 - [`minZoom`](#minzoom)/[`maxZoom`](#maxzoom) are tile matrix **array positions** (0 =
-  coarsest), not OSM zoom levels.
+  coarsest), not OSM zoom levels. This differs from
+  [`_WarpedTileLayer`](./warped-tile-layer.md)'s `minZoom`/`maxZoom`, which index its **source**
+  Web-Mercator pyramid — when composing a `tileMatrixSet`-driven `TileLayer` with a
+  `_WarpedTileLayer` basemap, set each layer's `minZoom`/`maxZoom` independently; the two props
+  share a name but not a numbering.
 - [`extent`](#extent) stays `[west, south, east, north]` in longitude/latitude. It is applied
   as the axis-aligned hull of its projected corners, which in strongly curved CRSs can include
   (never drop) some tiles just outside the intended region.

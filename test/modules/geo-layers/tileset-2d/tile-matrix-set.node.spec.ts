@@ -5,12 +5,47 @@
 import {test, expect} from 'vitest';
 import {
   normalizeTileMatrixSet,
+  normalizeCrsCode,
   selectTileMatrix,
   getTileBoundsCRS,
   getTileIndicesInBounds,
   getTileIndexAtPoint
 } from '@deck.gl/geo-layers/tileset-2d/tile-matrix-set';
 import {makeWorldCRS84Quad512, makeUTM18NTms, GIBS_500M_TMS, UTM_EXTENT} from './tms-fixtures';
+
+test('normalizeCrsCode#accepts plain codes, OGC URIs, URNs, and {uri} objects', () => {
+  // Plain code, unchanged
+  expect(normalizeCrsCode('EPSG:32619')).toBe('EPSG:32619');
+  // OGC CRS URI (as emitted by TiTiler/OGC APIs)
+  expect(normalizeCrsCode('http://www.opengis.net/def/crs/EPSG/0/32619')).toBe('EPSG:32619');
+  expect(normalizeCrsCode('https://www.opengis.net/def/crs/EPSG/0/32619')).toBe('EPSG:32619');
+  // OGC CRS URN form
+  expect(normalizeCrsCode('urn:ogc:def:crs:EPSG::32619')).toBe('EPSG:32619');
+  // TMS 2.0 {uri} object wrapping either form
+  expect(normalizeCrsCode({uri: 'http://www.opengis.net/def/crs/EPSG/0/32619'})).toBe('EPSG:32619');
+  expect(normalizeCrsCode({uri: 'urn:ogc:def:crs:EPSG::32619'})).toBe('EPSG:32619');
+  expect(normalizeCrsCode({uri: 'EPSG:32619'})).toBe('EPSG:32619');
+  // Non-EPSG authority in URI form is preserved (not hardcoded to EPSG)
+  expect(normalizeCrsCode('http://www.opengis.net/def/crs/OGC/1.3/CRS84')).toBe('OGC:CRS84');
+  // Garbage / unrecognized shape: documented passthrough, not a throw
+  expect(normalizeCrsCode('not-a-crs-identifier')).toBe('not-a-crs-identifier');
+});
+
+test('normalizeTileMatrixSet#crs is normalized to a plain code', () => {
+  expect(normalizeTileMatrixSet(makeWorldCRS84Quad512(1)).crs).toBe('EPSG:4326');
+  const uriForm = {
+    ...makeWorldCRS84Quad512(1),
+    crs: 'http://www.opengis.net/def/crs/EPSG/0/4326'
+  };
+  expect(normalizeTileMatrixSet(uriForm).crs).toBe('EPSG:4326');
+  const urnForm = {...makeWorldCRS84Quad512(1), crs: 'urn:ogc:def:crs:EPSG::4326'};
+  expect(normalizeTileMatrixSet(urnForm).crs).toBe('EPSG:4326');
+  const uriObjectForm = {
+    ...makeWorldCRS84Quad512(1),
+    crs: {uri: 'http://www.opengis.net/def/crs/EPSG/0/4326'}
+  };
+  expect(normalizeTileMatrixSet(uriObjectForm).crs).toBe('EPSG:4326');
+});
 
 test('normalizeTileMatrixSet#cellSize passthrough and spans', () => {
   const tms = normalizeTileMatrixSet(makeWorldCRS84Quad512(3));
