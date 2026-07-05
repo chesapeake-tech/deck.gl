@@ -76,18 +76,4 @@ export default class MapView extends View<MapViewState, MapViewProps> {
   get ControllerType() {
     return MapController;
   }
-
-  get controller() {
-    const opts = super.controller;
-    const {crs} = this.props;
-    if (!opts || !crs || crs === 'EPSG:3857') {
-      return opts;
-    }
-    // MapController's `normalize` constraints (world-fit min zoom, equator-centered
-    // maxBounds clamp) are computed in Web Mercator world coordinates and are
-    // meaningless in another CRS — on zoom-out they snap the view center out of the
-    // CRS data extent. Default normalization off for non-Mercator CRSs; an explicit
-    // user-provided `normalize` still wins.
-    return {normalize: false, ...opts};
-  }
 }

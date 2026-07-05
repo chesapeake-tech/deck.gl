@@ -109,6 +109,53 @@ test('CRSViewport#getConvergence defaults to the view center', () => {
   expect(viewport.getConvergence([-75, 40])).toBeCloseTo(0, 3);
 });
 
+test('CRSViewport#getCommonSpaceExtent', () => {
+  // UTM 18N extent: [166021.44, 0, 833978.56, 9329005.18]
+  const viewport = new CRSViewport({...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10});
+  const [minX, minY, maxX, maxY] = viewport.getCommonSpaceExtent();
+  expect(minX).toBe(0);
+  expect(minY).toBe(0);
+  // The extent's width always maps to the 512-unit common-space world.
+  expect(maxX).toBeCloseTo(512, 6);
+  // Height follows the extent's own aspect ratio (taller than 512 here, since UTM 18N's
+  // extent spans much more northing than easting).
+  expect(maxY).toBeCloseTo(512 * (9329005.18 / (833978.56 - 166021.44)), 3);
+
+  // Matches the invariant lngLatToCommon/projectFlat already rely on: the extent's own
+  // corners (in CRS units), converted back to lnglat and re-projected, land on exactly
+  // this box.
+  const {extent, transform} = viewport.crs;
+  const [blX, blY] = viewport.projectFlat(transform.inverse([extent[0], extent[1]]));
+  const [trX, trY] = viewport.projectFlat(transform.inverse([extent[2], extent[3]]));
+  expect(blX).toBeCloseTo(minX, 6);
+  expect(blY).toBeCloseTo(minY, 6);
+  expect(trX).toBeCloseTo(maxX, 6);
+  expect(trY).toBeCloseTo(maxY, 6);
+});
+
+test('CRSViewport#clampLngLatToDomain', () => {
+  const viewport = new CRSViewport({...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10});
+
+  // Already in-domain: returned unchanged.
+  const inDomain = viewport.clampLngLatToDomain([-72, 40]);
+  expect(inDomain).toEqual([-72, 40]);
+
+  // Out-of-domain (below the zone's equator edge): clamped to a finite, in-domain point.
+  const [, latOut] = viewport.clampLngLatToDomain([-72, -20]);
+  expect(latOut).toBeGreaterThanOrEqual(-0.01);
+
+  // Non-finite input (as in the library's default whole-world maxBounds) never reaches
+  // the transform with an invalid value, and never throws.
+  expect(() => viewport.clampLngLatToDomain([-Infinity, -90])).not.toThrow();
+  const [lngA, latA] = viewport.clampLngLatToDomain([-Infinity, -90]);
+  expect(Number.isFinite(lngA)).toBe(true);
+  expect(Number.isFinite(latA)).toBe(true);
+
+  const [lngB, latB] = viewport.clampLngLatToDomain([Infinity, 90]);
+  expect(Number.isFinite(lngB)).toBe(true);
+  expect(Number.isFinite(latB)).toBe(true);
+});
+
 test('CRSViewport#equals', () => {
   const opts = {...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10};
   expect(new CRSViewport(opts).equals(new CRSViewport(opts))).toBe(true);

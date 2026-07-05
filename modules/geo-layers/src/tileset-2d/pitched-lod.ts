@@ -197,7 +197,7 @@ export function selectPitchedBandTiles(opts: PitchedLODOptions): BandTileIndex[]
   // rects). Invariant: no holes — a dropped coarse tile's center region is genuinely covered by
   // a finer rect (probes show 0% holes at pitch <= 65). NOT an exact-overlap dedup: a coarse
   // tile STRADDLING a band seam (center outside the finer cover, body partly inside) is kept
-  // and double-drawn under the finer tiles — measured ~6-26% of selected tiles double-draw at
+  // and double-drawn under the finer tiles — measured ~6-26% of screen pixels double-covered at
   // pitch 65. Accepted: over-draw is visually benign (finer tiles render on top) versus a hole,
   // and exact polygon coverage would cost more than it saves. Tightening (e.g. per-edge cover
   // rects or fractional-overlap tests) is future work. Equal-level bands never cover each

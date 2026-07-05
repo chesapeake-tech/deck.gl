@@ -16,6 +16,7 @@ import {mod} from '../utils/math-utils';
 
 import LinearInterpolator from '../transitions/linear-interpolator';
 import type Viewport from '../viewports/viewport';
+import CRSViewport from '../viewports/crs-viewport';
 
 const PITCH_MOUSE_THRESHOLD = 5;
 const PITCH_ACCEL = 1.2;
@@ -38,6 +39,69 @@ function lngLatToWorld([lng, lat]: number[]): number[] {
   }
   const [, y] = _lngLatToWorld([0, lat]);
   return [lng, clamp(y, 0, WEB_MERCATOR_TILE_SIZE)];
+}
+
+/**
+ * D1 (viewport-delegated constraints): `applyConstraints`/`_constrainZoom`'s `maxBounds`
+ * math needs to project an arbitrary (and possibly out-of-domain — the library's own
+ * default `maxBounds` spans the whole globe) lnglat corner into common space, and this
+ * must generalize beyond Web Mercator without changing a single Mercator output.
+ *
+ * For a `CRSViewport`, this routes through the viewport's own exact transform, clamping
+ * the input into the CRS's domain first (`clampLngLatToDomain`, mirroring how the view
+ * center itself is clamped) and the output into the CRS's own common-space extent
+ * (`getCommonSpaceExtent`) — the CRS analog of Web Mercator's fixed `[0, 512]` world
+ * height.
+ *
+ * A non-finite lng/lat component (as in the library's own default `maxBounds`, which
+ * spans longitude to `+/-Infinity`) has no meaningful projection through the CRS
+ * transform: unlike Web Mercator, where leaving a non-finite world-space X unresolved
+ * is fine (it wraps/repeats, so "unconstrained" is a real state further down the
+ * pipeline), a CRS is a finite, non-repeating plane — "no constraint in this direction"
+ * for a CRS means its own extent edge, which also happens to realize D1's "clamp to
+ * extent-fit on zoom-out" requirement for the library's default whole-world bounds.
+ *
+ * For any other viewport (Web Mercator), this is the pre-existing `lngLatToWorld`
+ * wrapper, untouched — byte-identical to the code before D1.
+ */
+function projectMaxBoundsCorner(viewport: Viewport | null, lnglat: number[]): [number, number] {
+  if (viewport instanceof CRSViewport) {
+    return projectCRSMaxBoundsCorner(viewport, lnglat);
+  }
+  return lngLatToWorld(lnglat) as [number, number];
+}
+
+/** A non-finite axis value resolves to the CRS extent's own edge in that direction
+ * (see {@link projectMaxBoundsCorner}); `undefined` means the axis needs a real
+ * projection instead. */
+function resolveNonFiniteAxis(value: number, minEdge: number, maxEdge: number): number | undefined {
+  return Number.isFinite(value) ? undefined : value < 0 ? minEdge : maxEdge;
+}
+
+function projectCRSMaxBoundsCorner(viewport: CRSViewport, lnglat: number[]): [number, number] {
+  const [minX, minY, maxX, maxY] = viewport.getCommonSpaceExtent();
+  const [lng, lat] = lnglat;
+  const x = resolveNonFiniteAxis(lng, minX, maxX);
+  const y = resolveNonFiniteAxis(lat, minY, maxY);
+  if (x !== undefined && y !== undefined) {
+    return [x, y];
+  }
+  const safeLngLat = viewport.clampLngLatToDomain([
+    Number.isFinite(lng) ? lng : 0,
+    Number.isFinite(lat) ? lat : 0
+  ]);
+  const [px, py] = viewport.projectFlat(safeLngLat);
+  return [x ?? clamp(px, minX, maxX), y ?? clamp(py, minY, maxY)];
+}
+
+/** Inverse of {@link projectMaxBoundsCorner}: unproject a common-space point back to
+ * lnglat, via the viewport's own transform for a `CRSViewport`, or the pre-existing
+ * `worldToLngLat` for Web Mercator (untouched). */
+function unprojectCommonPoint(viewport: Viewport | null, xy: number[]): [number, number] {
+  if (viewport instanceof CRSViewport) {
+    return viewport.unprojectFlat(xy);
+  }
+  return worldToLngLat(xy);
 }
 
 export type MapStateProps = {
@@ -490,7 +554,18 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
     }
     props.pitch = clamp(pitch, minPitch, maxPitch);
 
-    const constrainedZoom = this._constrainZoom(props.zoom, props);
+    // Built once (only when needed) and shared with `_constrainZoom` below: for a
+    // CRSViewport this carries the exact transform + extent that generalizes the
+    // maxBounds/zoom-fit math beyond Web Mercator (D1). `null` when there's no maxBounds
+    // to project, or when this `MapState` was constructed without a `makeViewport` (a
+    // supported lower-level usage, e.g. `new MapState(props)` in tests, that never
+    // needed one pre-D1 either) — `projectMaxBoundsCorner`/`unprojectCommonPoint` treat a
+    // `null` viewport as "not a CRSViewport" and fall back to the untouched Mercator math,
+    // exactly the pre-D1 behavior. Only the CRS transform + extent are read from it, so
+    // building it before the zoom is settled is fine.
+    const zoomViewport = maxBounds ? this._tryMakeViewport(props) : null;
+
+    const constrainedZoom = this._constrainZoom(props.zoom, props, zoomViewport);
     const shouldRubberBand = rubberBand && constraintContext?.mode === 'elastic';
     props.zoom =
       constraintContext?.mode === 'preserve'
@@ -522,8 +597,9 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
         [props.longitude, props.latitude],
         maxBoundsRect
       );
-      const bl = lngLatToWorld(maxBounds[0]);
-      const tr = lngLatToWorld(maxBounds[1]);
+      // Common space: Web Mercator world units, or the CRS's own plane for a CRSViewport.
+      const bl = projectMaxBoundsCorner(viewport, maxBounds[0]);
+      const tr = projectMaxBoundsCorner(viewport, maxBounds[1]);
       // calculate center and zoom ranges at pitch=0 and bearing=0
       // to maintain visual stability when rotating
       const scale = 2 ** props.zoom;
@@ -535,7 +611,7 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
         tr[0] - screenExtents.right / scale,
         tr[1] - screenExtents.top / scale
       ];
-      const center = lngLatToWorld([props.longitude, props.latitude]);
+      const center = projectMaxBoundsCorner(viewport, [props.longitude, props.latitude]);
       const constrainedCenter = [
         clamp(center[0], minimumCenter[0], maximumCenter[0]),
         clamp(center[1], minimumCenter[1], maximumCenter[1])
@@ -559,7 +635,10 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
               : constrainedCenter[1];
       }
       if (displayedCenter[0] !== center[0] || displayedCenter[1] !== center[1]) {
-        const [displayedLongitude, displayedLatitude] = worldToLngLat(displayedCenter);
+        const [displayedLongitude, displayedLatitude] = unprojectCommonPoint(
+          viewport,
+          displayedCenter
+        );
         if (displayedCenter[0] !== center[0]) {
           props.longitude = displayedLongitude;
         }
@@ -574,7 +653,22 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
 
   /* Private methods */
 
-  _constrainZoom(zoom: number, props?: Required<MapStateProps>): number {
+  /** `this.makeViewport` is optional on `ViewState` (some lower-level callers construct a
+   * `MapState` directly without one, e.g. tests) — guard it rather than assume it exists,
+   * since pre-D1 `applyConstraints`/`_constrainZoom` never called it either. */
+  private _tryMakeViewport(props: Required<MapStateProps>): Viewport | null {
+    return typeof this.makeViewport === 'function' ? this.makeViewport(props) : null;
+  }
+
+  /** @param viewport - Optional, already-constructed viewport to reuse (passed by
+   * `applyConstraints`, which needs one for the maxBounds AABB clamp too). `undefined`
+   * constructs one on demand (only if `maxBounds` actually needs projecting); pass `null`
+   * explicitly to skip that (matches `applyConstraints`, which already tried). */
+  _constrainZoom(
+    zoom: number,
+    props?: Required<MapStateProps>,
+    viewport?: Viewport | null
+  ): number {
     props ||= this.getViewportProps();
     const {maxZoom, maxBounds} = props;
 
@@ -583,8 +677,9 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
 
     if (shouldApplyMaxBounds) {
       const maxBoundsRect = getMaxBoundsRect(props.width, props.height, props.maxBoundsPadding);
-      const bl = lngLatToWorld(maxBounds[0]);
-      const tr = lngLatToWorld(maxBounds[1]);
+      const vp = viewport === undefined ? this._tryMakeViewport(props) : viewport;
+      const bl = projectMaxBoundsCorner(vp, maxBounds[0]);
+      const tr = projectMaxBoundsCorner(vp, maxBounds[1]);
       const w = tr[0] - bl[0];
       const h = tr[1] - bl[1];
       // ignore bound size of 0 or Infinity
