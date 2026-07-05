@@ -107,7 +107,7 @@ const browserAliases = {
 };
 
 // Shared coverage configuration
-const coverageConfig: TestUserConfig["coverage"] = {
+const coverageConfig: TestUserConfig['coverage'] = {
   provider: 'v8' as const,
   reporter: ['text', 'lcov'],
   include: ['modules/*/src/**/*.ts'],
@@ -135,7 +135,10 @@ const optimizeDepsConfig = {
     '@loaders.gl/polyfills',
     '@loaders.gl/core',
     '@loaders.gl/images',
-    'd3-hexbin'
+    'd3-hexbin',
+    // Used by test-only CRS fixtures (render/geo-layers CRS tests) for a real UTM
+    // transform - devDependency only, never bundled into a published package
+    '@math.gl/proj4'
   ],
   // MapLibre v6 is native ESM. Add future ESM-only major aliases here.
   exclude: ['maplibre-gl-v6']
@@ -176,7 +179,7 @@ const projects = [
           setupFiles: ['./test/setup/vitest-node-setup.ts'],
           // Unique sequence order for running multiple projects together
           sequence: {groupOrder: 1}
-        },
+        }
       },
 
       // Scripts project - codemod and build tool tests
