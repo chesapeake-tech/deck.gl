@@ -53,3 +53,6 @@ export type {WarpedTileLayerProps as _WarpedTileLayerProps} from './warped-tile-
 
 export {MercatorCRSTileset2D as _MercatorCRSTileset2D} from './warped-tile-layer/mercator-crs-tileset-2d';
 export type {MercatorCRSTileset2DProps as _MercatorCRSTileset2DProps} from './warped-tile-layer/mercator-crs-tileset-2d';
+
+export {MapLibreStyleLayer as _MapLibreStyleLayer} from './maplibre-style-layer/maplibre-style-layer';
+export type {MapLibreStyleLayerProps as _MapLibreStyleLayerProps} from './maplibre-style-layer/types';
