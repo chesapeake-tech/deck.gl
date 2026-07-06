@@ -192,9 +192,12 @@ separate specs/PRs:
   services — the remaining half of the #6216 ask not covered by Phase 1's rendering support
   alone.
 * **MVTLayer support** (implemented on this branch, Chunk E1): reuses the existing
-  `GlobeView` wgs84-decode route, generalized to `PROJECTION_MODE.CRS`; `_CRSTileset2D`
-  selection via the already-generic `tileMatrixSet` prop. `_WMSLayer` support remains future
-  work.
+  `GlobeView` wgs84-decode route, generalized to `PROJECTION_MODE.CRS`. Tile selection covers
+  both real-world source shapes: `_CRSTileset2D` via the already-generic `tileMatrixSet` prop
+  for CRS-native sources, and (added after review) `MercatorCRSTileset2D` — auto-selected by
+  `MVTLayer._getTilesetClass()` when no `tileMatrixSet` is set — for the more common classic
+  Mercator-pyramid vector-tile source case (e.g. Esri's "Ocean Reference" service). `_WMSLayer`
+  support remains future work.
 * **Phase 3 — GPU warping of Web-Mercator sources** (implemented on this branch):
   `_WarpedTileLayer` renders per-tile gridded meshes, with vertices transformed Mercator →
   target CRS on CPU and the tile texture-mapped on GPU (OpenLayers-style triangulated

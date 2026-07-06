@@ -370,6 +370,17 @@ git commit -m "feat(geo-layers): warn once when MVTLayer is used in a CRS MapVie
 
 ### Task 4: Stage 1 docs + roadmap correction + app verification
 
+> **Post-review addendum (Finding 2, task-e1s1-fix):** as originally shipped, this task documented
+> a `tileMatrixSet`-only story and a warn-once for the no-`tileMatrixSet` CRS case. Review found
+> that gap unacceptable — the no-`tileMatrixSet` case is the *universal* real-world MVT source
+> shape (Esri "Ocean Reference", most public MVT endpoints) — and it now has a real route
+> (`MVTLayer._getTilesetClass()` selects `MercatorCRSTileset2D`, see the spec's Design and Goals
+> #1b). `mvt-layer.md`, `crs-viewport.md`, and the app demo below are updated accordingly to
+> describe/exercise **three** source cases: CRS-native (`tileMatrixSet` set) via `_CRSTileset2D`;
+> Mercator-pyramid (no `tileMatrixSet`) via `MercatorCRSTileset2D`, automatic; classic Mercator
+> `MapView` (unchanged). The steps below are left as originally written for history; the shipped
+> docs reflect the addendum, not the original tileMatrixSet-only wording.
+
 **Files:**
 - Modify: `docs/api-reference/geo-layers/mvt-layer.md`
 - Modify: `docs/api-reference/core/crs-viewport.md`
@@ -464,6 +475,16 @@ git commit -m "docs(geo-layers): document CRS-view MVTLayer support, correct E1 
 ---
 
 ## Stage 2 — MapLibre style-spec adapter (Tasks 5–13; depends on Stage 1 only in the acceptance-scenario demo, not in code)
+
+> **Post-review addendum (Finding 2, task-e1s1-fix):** Stage 1's `MVTLayer` tile-selection now
+> covers two source shapes — CRS-native (`tileMatrixSet` set, `_CRSTileset2D`) and Mercator-
+> pyramid (no `tileMatrixSet`, auto-routed through `MercatorCRSTileset2D`). Tasks below that
+> reference a vector source's `tileMatrixSet` (Task 5's `MapLibreVectorSource`, Task 13's
+> acceptance-scenario demo) should keep it optional exactly as already drafted — `tileMatrixSet`
+> unset is not a fallback/error case for the adapter's `MVTLayer` sublayer, it is the primary,
+> more common case (Esri's real "Ocean Reference" service has no `tileMatrixSet`). No task
+> bodies need structural changes; this note exists so an implementer does not "fix" the optional
+> `tileMatrixSet?` as an oversight when Stage 2 work resumes.
 
 ### Task 5: Add `@maplibre/maplibre-gl-style-spec` devDependency; scaffold module + evaluator type
 

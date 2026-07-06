@@ -258,10 +258,13 @@ Returns:
 * Web-Mercator raster basemaps (OSM, Esri) render in CRS views via the experimental
   [`_WarpedTileLayer`](../geo-layers/warped-tile-layer.md) (client-side triangulated
   reprojection).
-* **`MVTLayer`** renders CRS-native tiled vector sources (set
-  [`tileMatrixSet`](../geo-layers/tile-layer.md#tilematrixset)) correctly in CRS views, via the
-  same `wgs84`-decode route `GlobeView` already uses; the `binary` typed-array fast path is not
-  available in CRS views (same cost already accepted for Globe).
+* **`MVTLayer`** renders correctly in CRS views for both real-world source shapes: a classic
+  Mercator-pyramid vector-tile source (no `tileMatrixSet` — the common case, e.g. Esri's "Ocean
+  Reference" service) is automatically reprojected via `MercatorCRSTileset2D`; a CRS-native
+  tiled source (set [`tileMatrixSet`](../geo-layers/tile-layer.md#tilematrixset)) uses
+  `_CRSTileset2D`. Both go through the same `wgs84`-decode route `GlobeView` already uses; the
+  `binary` typed-array fast path is not available in CRS views (same cost already accepted for
+  Globe). See [`MVTLayer`'s CRS views doc](../geo-layers/mvt-layer.md#crs-views).
 * **`_WMSLayer`** is not yet CRS-aware.
 * **`TerrainLayer`** renders CRS-native tiled elevation sources (set
   [`tileMatrixSet`](../geo-layers/tile-layer.md#tilematrixset)) correctly in CRS views;
