@@ -3,6 +3,7 @@
 // Copyright (c) vis.gl contributors
 
 import type {MapLibreStyleEvaluator} from './types';
+import {withGeometryTypeCode} from './geometry-type';
 
 /** MapLibre's own camera/composite expressions are defined as interpolation between integer
  * zoom stops (tile buckets are built per integer zoom in mapbox-gl-js/maplibre-gl-js itself) —
@@ -14,7 +15,10 @@ export function zoomBucket(zoom: number): number {
 }
 
 export interface CompiledExpression<T> {
-  evaluate: (zoom: number, feature: {properties: Record<string, unknown>}) => T;
+  evaluate: (
+    zoom: number,
+    feature: {properties: Record<string, unknown>; geometry?: {type?: string}}
+  ) => T;
   /** True for 'camera'/'composite' expression kinds (depend on `["zoom"]`) — callers should
    * key this accessor's `updateTriggers` entry on `zoomBucket(viewport.zoom)`. False for
    * 'constant'/'source' (data-driven only) — no updateTrigger needed; evaluated once (or on
@@ -86,9 +90,40 @@ export function compileExpression<T>(
   propertySpec: unknown,
   evaluator: MapLibreStyleEvaluator
 ): CompiledExpression<T> {
+  // Review fix (C2): the injected evaluator is a structural contract (Decisions for review #2),
+  // not a typechecked import — a caller can hand in the wrong shape (e.g. a partial mock, or a
+  // typo'd property name) and get no compile-time signal. Fail fast with a clear message rather
+  // than letting `undefined(...)` throw a generic TypeError deep inside a render pass.
+  if (typeof evaluator?.createPropertyExpression !== 'function') {
+    throw new Error(
+      '_MapLibreStyleLayer: the injected `evaluator.createPropertyExpression` is not a function ' +
+        '— pass the real `createPropertyExpression` export from `@maplibre/maplibre-gl-style-spec` ' +
+        '(or a structurally identical implementation) as `evaluator.createPropertyExpression`.'
+    );
+  }
   const fullSpec = toFullPropertySpec(propertySpec);
   const input = normalizeExpressionInput(value);
-  const result = evaluator.createPropertyExpression(input, fullSpec);
+  const result = evaluator.createPropertyExpression(input, fullSpec) as {
+    result?: string;
+    value?: {kind: string; evaluate: (globals: unknown, feature?: unknown) => unknown};
+  };
+  // Review fix (C2): `createPropertyExpression` returns
+  // `{result: 'error', value: ExpressionParsingError[]}` on failure — `value` is a truthy array
+  // of error objects, not falsy, so the previous `if (!compiled) throw` never fired; the array
+  // was then used as if it were `{kind, evaluate}`, producing an opaque "evaluate is not a
+  // function" far from the actual cause. Check `result.result` explicitly and surface the real
+  // parser error text.
+  if (result.result === 'error') {
+    const messages = (result.value as unknown as Array<{message?: string}>)
+      .map(e => e?.message)
+      .filter(Boolean)
+      .join('; ');
+    throw new Error(
+      `_MapLibreStyleLayer: invalid MapLibre style expression ${JSON.stringify(value)}: ${
+        messages || '(no parser detail available)'
+      }`
+    );
+  }
   const compiled = result.value;
   if (!compiled) {
     throw new Error(`Invalid MapLibre style expression: ${JSON.stringify(value)}`);
@@ -96,6 +131,10 @@ export function compileExpression<T>(
   const isZoomDependent = compiled.kind === 'camera' || compiled.kind === 'composite';
   return {
     isZoomDependent,
-    evaluate: (zoom, feature) => compiled.evaluate({zoom}, feature as never) as T
+    // Review fix (C3): the same VectorTileFeature numeric geometry-type shim compileFilter uses
+    // — an ["geometry-type"] operand inside a paint/layout expression needs it too, or it
+    // silently evaluates against `feature.type === 'Feature'` instead of the real geometry.
+    evaluate: (zoom, feature) =>
+      compiled.evaluate({zoom}, withGeometryTypeCode(feature as never) as never) as T
   };
 }

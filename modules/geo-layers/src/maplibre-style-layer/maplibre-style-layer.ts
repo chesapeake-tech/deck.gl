@@ -6,6 +6,8 @@ import {CompositeLayer, Layer, LayersList, log} from '@deck.gl/core';
 import {binaryToGeojson} from '@loaders.gl/gis';
 import type {Feature} from 'geojson';
 
+import type {UpdateParameters} from '@deck.gl/core';
+
 import MVTLayer from '../mvt-layer/mvt-layer';
 import {
   mapBackgroundLayer,
@@ -15,6 +17,7 @@ import {
 } from './style-layer-mappers';
 import type {StyleLayer} from './style-layer-mappers';
 import {mapSymbolIconLayer, mapSymbolTextLayer} from './symbol-mappers';
+import {zoomBucket} from './compile-expression';
 import type {MapLibreStyleLayerProps} from './types';
 
 const SUPPORTED_TYPES = new Set(['fill', 'line', 'fill-extrusion', 'symbol']);
@@ -125,8 +128,37 @@ function toFeatureArray(tileData: unknown): Feature[] {
 export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> {
   static layerName = 'MapLibreStyleLayer';
 
+  /** Review fix (C1): `CompositeLayer`'s `activateViewport` (`modules/core/src/lib/layer.ts:628`
+   * region) only calls `setNeedsUpdate()` — the thing that actually causes `renderLayers()` to
+   * run again next frame — when `needsUpdate()`/`shouldUpdateState()` returns true. `Layer`'s
+   * default `shouldUpdateState` is `changeFlags.propsOrDataChanged` only
+   * (`modules/core/src/lib/layer.ts:481-483`), which is false for a pure viewport (pan/zoom)
+   * change with no prop/data/updateTrigger change. Without this override, zoom-only camera
+   * motion never re-ran `renderLayers()` at all, so the per-tile `renderSubLayers` callback
+   * (a function prop, invisible to deck.gl's prop diffing) never re-ran and zoom-interpolated
+   * paint expressions were evaluated exactly once, at whatever zoom the layer first mounted at.
+   * Mirrors `TileLayer.shouldUpdateState` (`tile-layer.ts`), which already reacts to
+   * `changeFlags.somethingChanged` (props-or-data OR viewport OR state) for the same reason. */
+  shouldUpdateState({changeFlags}: UpdateParameters<this>): boolean {
+    return changeFlags.somethingChanged;
+  }
+
   renderLayers(): LayersList {
     const {style, source, evaluator, spriteAtlas} = this.props;
+    // Review fix (C2): fail fast, once, with a clear message if the injected evaluator
+    // (Decisions for review #2 — a structural contract, not a typechecked import) is missing or
+    // malformed, rather than letting the first per-feature `compileExpression`/`compileFilter`
+    // call inside the tile callback throw a less obvious error mid-render.
+    if (
+      typeof evaluator?.createPropertyExpression !== 'function' ||
+      typeof evaluator?.featureFilter !== 'function'
+    ) {
+      throw new Error(
+        '_MapLibreStyleLayer: `evaluator` must provide both `createPropertyExpression` and ' +
+          '`featureFilter` as functions — pass the real exports from ' +
+          '`@maplibre/maplibre-gl-style-spec` (see the module doc for the injection contract).'
+      );
+    }
     const zoom = this.context.viewport.zoom;
     const layers: LayersList = [];
 
@@ -155,6 +187,23 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // render in classic Mercator MapViews. Deviation: the plan's Task 12 sketch did not set
         // this and would warn continuously in the Mercator regression case (Task 13).
         binary: false,
+        // Review fix (C1): `renderSubLayers` is a function prop — deck.gl's shallow prop diff
+        // never considers it "changed" (a fresh closure is created every render, but that's not
+        // a value-comparable difference `diffUpdateTrigger` can key on), so `TileLayer`'s own
+        // updateState (`tile-layer.ts:242`) never regenerated per-tile sublayers on a zoom
+        // bucket change through this prop alone. `updateTriggers` entries, by contrast, ARE
+        // value-compared per key (`diffUpdateTrigger`, `modules/core/src/lifecycle/props.ts:251`)
+        // — any key name works, not just ones matching a real accessor prop. Keying a
+        // `renderSubLayers` entry on the current integer zoom bucket makes
+        // `changeFlags.updateTriggersChanged` truthy (but not `.all`/`.getTileData`) whenever the
+        // zoom bucket changes, which routes `TileLayer.updateState` into its "regenerate
+        // sublayers without refetching" branch (`tile.layers = null` per tile, `tile-layer.ts:
+        // 266-268`) instead of a full `tileset.reloadAll()` — exactly the "value-compared path"
+        // the review asked for.
+        updateTriggers: {
+          ...((source as {updateTriggers?: Record<string, unknown>}).updateTriggers ?? {}),
+          renderSubLayers: zoomBucket(zoom)
+        },
         renderSubLayers: (tileProps: TileRenderProps) => {
           const features = toFeatureArray(tileProps.data);
           const sublayers: LayersList = [];

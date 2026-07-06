@@ -80,6 +80,24 @@ test('mapLineLayer#applies line-dasharray via PathStyleExtension', () => {
   expect(layer.props.extensions?.some(e => e instanceof PathStyleExtension)).toBe(true);
 });
 
+// Review finding I1: the style-spec's parsed Color is PREMULTIPLIED — rgba(255,0,0,.5) parses
+// to {r:.5, g:0, b:0, a:.5}, not {r:1, g:0, b:0, a:.5}. The un-premultiplied reading darkens
+// every semi-transparent color (r:.5*255=127 instead of the correct 255).
+test('mapFillLayer#semi-transparent fill-color un-premultiplies correctly (rgba(255,0,0,.5) -> full-intensity red at alpha 127)', () => {
+  const styleLayer = {
+    id: 'translucent',
+    type: 'fill',
+    paint: {'fill-color': 'rgba(255,0,0,0.5)'}
+  };
+  const layer = mapFillLayer(styleLayer, [polygonFeature], evaluator, 10) as GeoJsonLayer;
+  const getFillColor = layer.props.getFillColor as (f: unknown) => number[];
+  const [r, g, b, a] = getFillColor(polygonFeature);
+  expect(r).toBe(255);
+  expect(g).toBe(0);
+  expect(b).toBe(0);
+  expect(a).toBe(128);
+});
+
 test('mapFillExtrusionLayer#extruded true, getElevation from fill-extrusion-height', () => {
   const extrudedFeature = {...polygonFeature, properties: {'fill-extrusion-height': 30}};
   const layer = mapFillExtrusionLayer(
