@@ -214,6 +214,62 @@ function isFinite2(xy: number[]): boolean {
   return Number.isFinite(xy[0]) && Number.isFinite(xy[1]);
 }
 
+/** Max cached (lng, lat) origins per CRS, per memoized function, before the oldest
+ * (least-recently-used) entries are evicted. `getCRSJacobianAtOrigin`/`getCRSHessianAtOrigin`/
+ * `getCRSMetersJacobianAtOrigin` are pure functions of (crs, origin) - independent of
+ * zoom/pan/viewMatrix - but are invoked once per sublayer origin, every frame
+ * (see viewport-uniforms.ts's `getUniformsFromViewport`). Memoizing them turns a
+ * multi-million-call-per-zoom-sweep proj-wasm hot path into O(distinct origins). Origins
+ * recur across frames (view center, per-tile origins) but a long pan/zoom session could in
+ * principle produce unbounded distinct origins, so each per-CRS cache is bounded to this
+ * many entries with LRU eviction. */
+const MAX_ORIGIN_CACHE_ENTRIES_PER_CRS = 1024;
+
+/** Per-(crs, origin) memoization cache. Keyed on the `NormalizedCRS` object identity via a
+ * `WeakMap` (rather than `crs.code`, since two different `CRSDefinition`/`NormalizedCRS`
+ * instances could share a code) so a new crs object always gets a fresh cache and is
+ * automatically released when the crs object itself is garbage collected. Nested `Map` is
+ * keyed on the exact numeric (lng, lat) - stable and collision-free since JS's default
+ * number-to-string conversion round-trips any double - with LRU eviction bounded by
+ * {@link MAX_ORIGIN_CACHE_ENTRIES_PER_CRS}. */
+function memoizedByOrigin<T>(
+  cache: WeakMap<NormalizedCRS, Map<string, T>>,
+  crs: NormalizedCRS,
+  lnglat: number[],
+  compute: () => T
+): T {
+  let perCRS = cache.get(crs);
+  if (!perCRS) {
+    perCRS = new Map();
+    cache.set(crs, perCRS);
+  }
+  const key = `${lnglat[0]},${lnglat[1]}`;
+  if (perCRS.has(key)) {
+    const cached = perCRS.get(key) as T;
+    // Re-inserting moves the key to the end of Map's iteration order, marking it
+    // most-recently-used for the LRU eviction below.
+    perCRS.delete(key);
+    perCRS.set(key, cached);
+    return cached;
+  }
+  const result = compute();
+  if (perCRS.size >= MAX_ORIGIN_CACHE_ENTRIES_PER_CRS) {
+    const oldestKey = perCRS.keys().next().value;
+    if (oldestKey !== undefined) {
+      perCRS.delete(oldestKey);
+    }
+  }
+  perCRS.set(key, result);
+  return result;
+}
+
+const jacobianCache = new WeakMap<NormalizedCRS, Map<string, [number, number, number, number]>>();
+const metersJacobianCache = new WeakMap<
+  NormalizedCRS,
+  Map<string, [number, number, number, number]>
+>();
+const hessianCache = new WeakMap<NormalizedCRS, Map<string, CRSHessian>>();
+
 /** d(common) / d(degrees) along one lnglat axis, by finite differences.
  * Falls back to one-sided differences at the edge of the CRS domain. */
 function partialDerivative(crs: NormalizedCRS, lnglat: number[], axis: 0 | 1): [number, number] {
@@ -244,9 +300,11 @@ export function getCRSJacobian(
   crs: NormalizedCRS,
   lnglat: number[]
 ): [number, number, number, number] {
-  const dLng = partialDerivative(crs, lnglat, 0);
-  const dLat = partialDerivative(crs, lnglat, 1);
-  return [dLng[0], dLng[1], dLat[0], dLat[1]];
+  return memoizedByOrigin(jacobianCache, crs, lnglat, () => {
+    const dLng = partialDerivative(crs, lnglat, 0);
+    const dLat = partialDerivative(crs, lnglat, 1);
+    return [dLng[0], dLng[1], dLat[0], dLat[1]];
+  });
 }
 
 /** Column-major 2x2 Jacobian of the lnglat->common transform, expressed in common units
@@ -275,15 +333,19 @@ export function getCRSMetersJacobian(
   crs: NormalizedCRS,
   lnglat: number[]
 ): [number, number, number, number] {
-  const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
-  const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((lnglat[1] * Math.PI) / 180));
-  const degLatPerMeterNorth = 1 / METERS_PER_DEGREE;
-  return [
-    dXdLng * degLngPerMeterEast,
-    dYdLng * degLngPerMeterEast,
-    dXdLat * degLatPerMeterNorth,
-    dYdLat * degLatPerMeterNorth
-  ];
+  return memoizedByOrigin(metersJacobianCache, crs, lnglat, () => {
+    // Reuses getCRSJacobian's own (crs, origin) memoization - a cache hit here costs no
+    // extra proj-wasm calls even on a cache miss for this function.
+    const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
+    const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((lnglat[1] * Math.PI) / 180));
+    const degLatPerMeterNorth = 1 / METERS_PER_DEGREE;
+    return [
+      dXdLng * degLngPerMeterEast,
+      dYdLng * degLngPerMeterEast,
+      dXdLat * degLatPerMeterNorth,
+      dYdLat * degLatPerMeterNorth
+    ];
+  });
 }
 
 /** Second-order (quadratic) coefficients of the lnglat->common transform at the given
@@ -305,46 +367,48 @@ export type CRSHessian = {
 const ZERO_HESSIAN: CRSHessian = {x: [0, 0, 0], y: [0, 0, 0]};
 
 export function getCRSHessian(crs: NormalizedCRS, lnglat: number[]): CRSHessian {
-  const h = HESSIAN_STEP;
-  const [lng, lat] = lnglat;
+  return memoizedByOrigin(hessianCache, crs, lnglat, () => {
+    const h = HESSIAN_STEP;
+    const [lng, lat] = lnglat;
 
-  const center = lngLatToCommon(crs, [lng, lat]);
-  const pLngHi = lngLatToCommon(crs, [lng + h, lat]);
-  const pLngLo = lngLatToCommon(crs, [lng - h, lat]);
-  const pLatHi = lngLatToCommon(crs, [lng, lat + h]);
-  const pLatLo = lngLatToCommon(crs, [lng, lat - h]);
-  const pPP = lngLatToCommon(crs, [lng + h, lat + h]);
-  const pPM = lngLatToCommon(crs, [lng + h, lat - h]);
-  const pMP = lngLatToCommon(crs, [lng - h, lat + h]);
-  const pMM = lngLatToCommon(crs, [lng - h, lat - h]);
+    const center = lngLatToCommon(crs, [lng, lat]);
+    const pLngHi = lngLatToCommon(crs, [lng + h, lat]);
+    const pLngLo = lngLatToCommon(crs, [lng - h, lat]);
+    const pLatHi = lngLatToCommon(crs, [lng, lat + h]);
+    const pLatLo = lngLatToCommon(crs, [lng, lat - h]);
+    const pPP = lngLatToCommon(crs, [lng + h, lat + h]);
+    const pPM = lngLatToCommon(crs, [lng + h, lat - h]);
+    const pMP = lngLatToCommon(crs, [lng - h, lat + h]);
+    const pMM = lngLatToCommon(crs, [lng - h, lat - h]);
 
-  const samples = [center, pLngHi, pLngLo, pLatHi, pLatLo, pPP, pPM, pMP, pMM];
-  if (!samples.every(isFinite2)) {
-    return ZERO_HESSIAN;
-  }
+    const samples = [center, pLngHi, pLngLo, pLatHi, pLatLo, pPP, pPM, pMP, pMM];
+    if (!samples.every(isFinite2)) {
+      return ZERO_HESSIAN;
+    }
 
-  const h2 = h * h;
-  const dLngLng: [number, number] = [
-    (pLngHi[0] - 2 * center[0] + pLngLo[0]) / h2,
-    (pLngHi[1] - 2 * center[1] + pLngLo[1]) / h2
-  ];
-  const dLatLat: [number, number] = [
-    (pLatHi[0] - 2 * center[0] + pLatLo[0]) / h2,
-    (pLatHi[1] - 2 * center[1] + pLatLo[1]) / h2
-  ];
-  const dLngLat: [number, number] = [
-    (pPP[0] - pPM[0] - pMP[0] + pMM[0]) / (4 * h2),
-    (pPP[1] - pPM[1] - pMP[1] + pMM[1]) / (4 * h2)
-  ];
+    const h2 = h * h;
+    const dLngLng: [number, number] = [
+      (pLngHi[0] - 2 * center[0] + pLngLo[0]) / h2,
+      (pLngHi[1] - 2 * center[1] + pLngLo[1]) / h2
+    ];
+    const dLatLat: [number, number] = [
+      (pLatHi[0] - 2 * center[0] + pLatLo[0]) / h2,
+      (pLatHi[1] - 2 * center[1] + pLatLo[1]) / h2
+    ];
+    const dLngLat: [number, number] = [
+      (pPP[0] - pPM[0] - pMP[0] + pMM[0]) / (4 * h2),
+      (pPP[1] - pPM[1] - pMP[1] + pMM[1]) / (4 * h2)
+    ];
 
-  const hessian: CRSHessian = {
-    x: [dLngLng[0], dLngLat[0], dLatLat[0]],
-    y: [dLngLng[1], dLngLat[1], dLatLat[1]]
-  };
-  if (![...hessian.x, ...hessian.y].every(Number.isFinite)) {
-    return ZERO_HESSIAN;
-  }
-  return hessian;
+    const hessian: CRSHessian = {
+      x: [dLngLng[0], dLngLat[0], dLatLat[0]],
+      y: [dLngLng[1], dLngLat[1], dLatLat[1]]
+    };
+    if (![...hessian.x, ...hessian.y].every(Number.isFinite)) {
+      return ZERO_HESSIAN;
+    }
+    return hessian;
+  });
 }
 
 /** Standard surveying grid convergence angle (γ), in degrees, at the given lnglat position.
