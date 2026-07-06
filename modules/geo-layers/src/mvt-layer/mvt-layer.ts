@@ -147,6 +147,28 @@ export default class MVTLayer<
   }
 
   updateState({props, oldProps, context, changeFlags}: UpdateParameters<this>) {
+    // Multi-view / live projection-mode fast-follow (see docs/superpowers/specs/
+    // 2026-07-06-crs-multiview-audit.md, scenario 1): `initializeState()` derives
+    // `state.binary` from `usesFeatureRoute(context.viewport)` exactly once, at layer creation.
+    // `context.viewport` is a single mutable slot on the shared layer context that reflects
+    // whichever viewport was last activated (`layer-manager.ts#activateViewport`) -- for a
+    // layer instance whose serving view changes after init (a live CRS<->Mercator `crs` swap on
+    // the same `MapView`, or this instance being shared -- against the guidance in
+    // docs/developer-guide/views.md#rendering-layers-in-multiple-views -- across a Mercator view
+    // and a CRS view), that no longer matches what `usesFeatureRoute` was computed against at
+    // init. Recompute it on every update, mirroring the base `TileLayer`'s own
+    // projectionMode-triggered tileset recreation (tile-layer.ts) for the same root cause:
+    // binary tiles requested/rendered under the feature route is exactly the combination
+    // `usesFeatureRoute`'s doc comment says "GlobeView/CRS views don't work well with binary
+    // data". Previously-cached tile content was decoded for the old route, so force a reload.
+    if (this.state) {
+      const desiredBinary = usesFeatureRoute(context.viewport) ? false : props.binary;
+      if (this.state.binary !== desiredBinary) {
+        this.setState({binary: desiredBinary});
+        this.state.tileset?.reloadAll();
+      }
+    }
+
     if (changeFlags.dataChanged) {
       // eslint-disable-next-line @typescript-eslint/no-floating-promises
       this._updateTileData();
