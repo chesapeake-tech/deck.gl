@@ -152,6 +152,10 @@ surfaces it.
 
 See [CRSViewport](./crs-viewport.md) for the viewport implementation and its limitations.
 
+Sharing a `TileLayer`/`MVTLayer`/`_WarpedTileLayer`/`_MapLibreStyleLayer` instance across a
+Mercator view and a CRS view (or two views with different `crs`) in the same `Deck` is not
+recommended — see [CRSViewport Limitations: Multi-view](./crs-viewport.md#multi-view-sharing-a-layer-across-a-mercator-view-and-a-crs-view).
+
 
 ## View State
 
