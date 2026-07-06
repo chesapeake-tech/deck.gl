@@ -19,6 +19,16 @@ export interface MapLibreStyleEvaluator {
     filter: unknown,
     globalState?: unknown
   ) => {filter: (globals: unknown, feature?: unknown) => boolean};
+  /** Optional: `@maplibre/maplibre-gl-style-spec`'s own `convertFunction` export. Enables the
+   * adapter to normalize legacy (pre-expression, Mapbox Style Spec v7-era) `{stops: [...]}`
+   * zoom/property functions into a real expression before compiling — real MapLibre style
+   * validation performs this same conversion upstream of `createPropertyExpression`, which
+   * otherwise rejects a bare `{stops: [...]}` object with an opaque "Bare objects invalid"
+   * error (verified against the real package; see `compile-expression.ts`'s
+   * `convertLegacyStopsFunction`). Real-world styles (CARTO, Esri) still author zoom-dependent
+   * paint/layout this way — omit this field and legacy-function styles fail to compile; it
+   * costs nothing to always pass it. */
+  convertFunction?: (parameters: unknown, propertySpec: unknown) => unknown;
 }
 
 /** A single vector tile source: a `{z}/{x}/{y}` URL template plus optional CRS-native tiling

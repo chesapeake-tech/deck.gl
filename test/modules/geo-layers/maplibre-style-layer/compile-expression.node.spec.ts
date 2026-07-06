@@ -3,13 +3,18 @@
 // Copyright (c) vis.gl contributors
 
 import {test, expect} from 'vitest';
-import {createPropertyExpression, featureFilter} from '@maplibre/maplibre-gl-style-spec';
+import {
+  createPropertyExpression,
+  featureFilter,
+  convertFunction
+} from '@maplibre/maplibre-gl-style-spec';
 import {
   compileExpression,
   zoomBucket
 } from '@deck.gl/geo-layers/maplibre-style-layer/compile-expression';
 
 const evaluator = {createPropertyExpression, featureFilter};
+const evaluatorWithConvert = {createPropertyExpression, featureFilter, convertFunction};
 
 test('zoomBucket#floors to integer', () => {
   expect(zoomBucket(11.9)).toBe(11);
@@ -106,4 +111,70 @@ test('compileExpression#["geometry-type"] expression evaluates against the GeoJS
   );
   expect(evaluate(10, {properties: {}, geometry: {type: 'Polygon'}} as any)).toBe('poly');
   expect(evaluate(10, {properties: {}, geometry: {type: 'Point'}} as any)).toBe('other');
+});
+
+// Round 8 fork feedback #4: legacy (pre-expression) `{stops: [...]}` zoom functions are real,
+// current-day style JSON (CARTO/Esri still ship them) — `createPropertyExpression` rejects a
+// bare stops object outright ("Bare objects invalid") unless it's converted to an expression
+// first via the style-spec's own `convertFunction`.
+test('compileExpression#legacy {stops} zoom function is converted and evaluates like a real expression', () => {
+  const legacy = {
+    stops: [
+      [5, '#ff0000'],
+      [10, '#0000ff']
+    ]
+  };
+  const {evaluate, isZoomDependent} = compileExpression<string>(
+    legacy,
+    {type: 'color'},
+    evaluatorWithConvert
+  );
+  expect(isZoomDependent).toBe(true);
+  expect(evaluate(5, {properties: {}})).toBeTruthy();
+  expect(evaluate(10, {properties: {}})).toBeTruthy();
+});
+
+test('compileExpression#legacy {stops} function throws a clear error when the evaluator has no convertFunction', () => {
+  const legacy = {
+    stops: [
+      [5, '#ff0000'],
+      [10, '#0000ff']
+    ]
+  };
+  expect(() => compileExpression<string>(legacy, {type: 'color'}, evaluator)).toThrow(
+    /convertFunction/i
+  );
+});
+
+// Round 8 fork feedback #4: a real style's `line-dasharray` zoom function can mix stop lengths
+// (CARTO ships `[1]` at z5, `[2, 2]` at z7) — MapLibre's own dasharray semantics are cyclic
+// (`[1]` repeats identically to `[1, 1, ...]`), so the adapter must equalize stops to a common
+// length before compiling, both so `createPropertyExpression` doesn't reject the mismatch and so
+// every evaluated stop is actually the same length at runtime (`PathStyleExtension`'s
+// fixed-size-2 `getDashArray` accessor needs that, not just a passing compile-time check).
+test('compileExpression#unequal-length line-dasharray stops are cyclic-equalized before compiling', () => {
+  const legacyDasharray = {
+    stops: [
+      [5, [1]],
+      [7, [2, 2]]
+    ]
+  };
+  const {evaluate} = compileExpression<number[]>(
+    legacyDasharray,
+    {type: 'array', value: 'number'},
+    evaluatorWithConvert
+  );
+  expect(evaluate(5, {properties: {}})).toEqual([1, 1]);
+  expect(evaluate(7, {properties: {}})).toEqual([2, 2]);
+});
+
+test('compileExpression#unequal-length dasharray also equalizes when authored directly as a step expression (no legacy stops)', () => {
+  const stepExpression = ['step', ['zoom'], ['literal', [1]], 7, ['literal', [2, 2]]];
+  const {evaluate} = compileExpression<number[]>(
+    stepExpression,
+    {type: 'array', value: 'number'},
+    evaluator
+  );
+  expect(evaluate(5, {properties: {}})).toEqual([1, 1]);
+  expect(evaluate(7, {properties: {}})).toEqual([2, 2]);
 });

@@ -120,6 +120,113 @@ function normalizeExpressionInput(value: unknown): unknown {
   return detokenized;
 }
 
+/** A legacy (pre-expression, Mapbox Style Spec v7-era) zoom/property "function":
+ * `{stops: [[zoom, value], ...], base?, property?}`. Distinguished from an expression array (which
+ * is always an `Array`) or a plain constant by being a non-array object with a `stops` array. */
+function isLegacyStopsFunction(
+  value: unknown
+): value is {stops: unknown[]; [key: string]: unknown} {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Array.isArray((value as {stops?: unknown}).stops)
+  );
+}
+
+/** Review fix (Round 8 finding, fork feedback #4): normalizes a legacy `{stops: [...]}`
+ * zoom/property function into a real expression via the injected evaluator's own
+ * `convertFunction` (`@maplibre/maplibre-gl-style-spec`'s export) — real MapLibre style
+ * validation performs this exact conversion one layer above `createPropertyExpression`, which
+ * otherwise rejects the bare object outright ("Bare objects invalid", verified against the real
+ * package). Real-world styles (CARTO, Esri) still author zoom-dependent paint/layout this way —
+ * this was previously left to callers to preprocess (the app-side workaround this review
+ * responds to); belongs in the adapter since it already requires the same package for
+ * `createPropertyExpression`/`featureFilter`. A non-legacy `value` (the overwhelmingly common
+ * case) passes through unchanged without needing `convertFunction` at all. */
+function convertLegacyStopsFunction(
+  value: unknown,
+  fullSpec: Record<string, unknown>,
+  evaluator: MapLibreStyleEvaluator
+): unknown {
+  if (!isLegacyStopsFunction(value)) {
+    return value;
+  }
+  if (typeof evaluator.convertFunction !== 'function') {
+    throw new Error(
+      '_MapLibreStyleLayer: legacy `{stops: [...]}` zoom/property functions require ' +
+        '`evaluator.convertFunction` — pass the `convertFunction` export from ' +
+        '`@maplibre/maplibre-gl-style-spec` alongside `createPropertyExpression`/`featureFilter` ' +
+        'in the injected `evaluator`.'
+    );
+  }
+  return evaluator.convertFunction(value, fullSpec);
+}
+
+/** Greatest common divisor (Euclidean algorithm) — helper for {@link lcm}. */
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
+/** Least common multiple — used to find a single length every dasharray-style stop can be
+ * losslessly cyclic-repeated to. */
+function lcm(a: number, b: number): number {
+  return (a * b) / gcd(a, b);
+}
+
+/** Repeats `arr` cyclically out to `length` elements — the semantics MapLibre's own dasharray
+ * rendering already gives a too-short pattern (`[1]` draws identically to `[1, 1, 1, ...]`). */
+function cyclicRepeat(arr: number[], length: number): number[] {
+  return Array.from({length}, (_, i) => arr[i % arr.length]);
+}
+
+/** Recursively collects every "leaf" numeric array inside an (already legacy-converted,
+ * literal-wrapped) expression tree — e.g. each `[1]` / `[2, 2]` inside
+ * `["step", ["zoom"], ["literal", [1]], 7, ["literal", [2, 2]]]`. Stops descending at the first
+ * all-number array found (a leaf), rather than also collecting its own numeric elements. */
+function collectNumericArrayLeaves(node: unknown, leaves: number[][]): void {
+  if (!Array.isArray(node)) return;
+  if (node.length > 0 && node.every(v => typeof v === 'number')) {
+    leaves.push(node);
+    return;
+  }
+  for (const child of node) collectNumericArrayLeaves(child, leaves);
+}
+
+/** Review fix (Round 8 finding, fork feedback #4): `line-dasharray`'s array-typed values are
+ * cyclic (see {@link cyclicRepeat}), but a zoom function whose stops mix different array
+ * lengths — CARTO ships `line-dasharray: [1]` at z5 and `[2, 2]` at z7 — fails
+ * `createPropertyExpression`'s array-length unification once compiled to a `step` expression
+ * (real error: "Expected array<number, 2> but found array<number, 1>"), and even where that
+ * validation is loosened, `PathStyleExtension`'s fixed-size-2 `getDashArray` accessor needs
+ * every EVALUATED stop to actually be the same length at runtime, not just pass a compile-time
+ * check. Losslessly equalizes every numeric-array leaf in `value` to the LCM of the lengths
+ * encountered, by cyclic repetition, and reports that length for the caller to set as the
+ * property spec's `length` (letting `createPropertyExpression` validate the now-uniform stops).
+ * A single-leaf (non-function) array value, e.g. a plain constant `line-dasharray: [2, 2]`, is
+ * left byte-for-byte unchanged; only its length is reported. Gated by the caller to array-typed
+ * properties only (`compileExpression`, below) — irrelevant, and a no-op, for every other
+ * property type. */
+function equalizeNumericArrayStops(value: unknown): {value: unknown; length?: number} {
+  const leaves: number[][] = [];
+  collectNumericArrayLeaves(value, leaves);
+  if (leaves.length === 0) {
+    return {value};
+  }
+  const targetLength = leaves.reduce((acc, arr) => lcm(acc, arr.length), 1);
+  if (leaves.every(arr => arr.length === targetLength)) {
+    return {value, length: targetLength};
+  }
+  const rewrite = (node: unknown): unknown => {
+    if (!Array.isArray(node)) return node;
+    if (node.length > 0 && node.every(v => typeof v === 'number')) {
+      return node.length === targetLength ? node : cyclicRepeat(node, targetLength);
+    }
+    return node.map(rewrite);
+  };
+  return {value: rewrite(value), length: targetLength};
+}
+
 /** Review fix (I6): a cache shared across every `compileExpression`/`compileFilter` call for one
  * style (constructed once per style+evaluator identity by the composite's `updateState` — see
  * `maplibre-style-layer.ts`), keyed on the paint/layout `value` reference (stable across tile
@@ -153,7 +260,19 @@ export function compileExpression<T>(
     );
   }
   const fullSpec = toFullPropertySpec(propertySpec);
-  const input = normalizeExpressionInput(value);
+  const convertedValue = convertLegacyStopsFunction(value, fullSpec, evaluator);
+  let input = normalizeExpressionInput(convertedValue);
+  // Review fix (Round 8 finding, fork feedback #4): only array-typed properties (in practice,
+  // `line-dasharray`) need stop-length equalization — a no-op probe for every other property
+  // type (color/number/string values don't contain numeric-array leaves in their expression
+  // tree; see `equalizeNumericArrayStops`'s doc comment).
+  if (fullSpec.type === 'array') {
+    const equalized = equalizeNumericArrayStops(input);
+    input = equalized.value;
+    if (equalized.length !== undefined) {
+      fullSpec.length = equalized.length;
+    }
+  }
   const result = evaluator.createPropertyExpression(input, fullSpec) as {
     result?: string;
     value?: {kind: string; evaluate: (globals: unknown, feature?: unknown) => unknown};
