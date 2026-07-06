@@ -20,6 +20,8 @@ import {mapSymbolIconLayer, mapSymbolTextLayer} from './symbol-mappers';
 import {zoomBucket} from './compile-expression';
 import type {CompileCache} from './compile-expression';
 import type {MapLibreStyleLayerProps} from './types';
+import {mercatorEquivalentZoom} from './style-eval-zoom';
+import {backgroundCoveringFeature} from './background-coverage';
 
 const SUPPORTED_TYPES = new Set(['fill', 'line', 'fill-extrusion', 'symbol']);
 
@@ -206,7 +208,11 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           '`@maplibre/maplibre-gl-style-spec` (see the module doc for the injection contract).'
       );
     }
-    const zoom = this.context.viewport.zoom;
+    // Review fix (Round 8 finding 1): style evaluation (minzoom/maxzoom gating, zoom
+    // expressions, and the zoom-bucket updateTrigger below) must use the Mercator-equivalent
+    // zoom, not the raw viewport zoom -- see `style-eval-zoom.ts`'s doc comment. Identity for a
+    // classic Mercator MapView; only the CRS-view case actually shifts the number.
+    const zoom = mercatorEquivalentZoom(this.context.viewport);
     const layers: LayersList = [];
     // Review fix (I6): compiled once per style+evaluator identity (see `_getCompileCache`), not
     // once per tile render — passed into every mapper call below and into the per-tile
@@ -220,11 +226,16 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     const allStyleLayers = style.layers as StyleLayer[];
     const backgroundStyleLayer = allStyleLayers.find(l => l.type === 'background');
     if (backgroundStyleLayer) {
+      // Review fix (Round 8 finding 3): a hardcoded ±180°/±90° LNGLAT world rectangle is not
+      // CRS-safe -- a UTM (or other small-extent) transform folds it into a degenerate shape
+      // that never covers the viewport. Cover the CRS's own valid extent instead (identity for
+      // a classic Mercator/non-CRS viewport, which still gets the whole-world rectangle — see
+      // `background-coverage.ts`).
       const backgroundLayer = mapBackgroundLayer(
         backgroundStyleLayer,
         evaluator,
         zoom,
-        undefined,
+        backgroundCoveringFeature(this.context.viewport),
         compileCache
       );
       if (backgroundLayer) {
@@ -294,9 +305,20 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // sublayers without refetching" branch (`tile.layers = null` per tile, `tile-layer.ts:
         // 266-268`) instead of a full `tileset.reloadAll()` — exactly the "value-compared path"
         // the review asked for.
+        //
+        // Review fix (Round 8 finding 2): keying solely on the zoom bucket left already-
+        // materialized tile sublayers stale across a *style* swap that didn't also cross an
+        // integer zoom boundary (e.g. two styles sharing a source id) — a changed `style` prop
+        // never regenerated them. `diffUpdateTrigger`'s `compareProps` falls back to reference
+        // (`!==`) equality for values with no registered `propType` (`props.ts`'s
+        // `comparePropValues`), so pairing the zoom bucket with the `style` object reference in
+        // an array — rather than the bucket alone — makes a new `style` identity (this
+        // composite's own cache-invalidation key, see `_getCompileCache`) also flip
+        // `updateTriggersChanged`, regenerating sublayers on a style swap exactly as it already
+        // does on a zoom-bucket crossing.
         updateTriggers: {
           ...(sourceUpdateTriggers ?? {}),
-          renderSubLayers: zoomBucket(zoom)
+          renderSubLayers: [zoomBucket(zoom), style]
         },
         renderSubLayers: (tileProps: TileRenderProps) => {
           const features = toFeatureArray(tileProps.data);
