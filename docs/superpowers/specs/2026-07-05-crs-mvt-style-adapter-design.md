@@ -584,3 +584,31 @@ parse time; (b) per-feature `evaluate()` throughput is high enough (~10M/sec) th
 itself the bottleneck at any realistic tile/feature scale — the bucket-crossing storm above was
 dominated by the *filter* pass and repeated object construction across every style layer, not by
 per-feature expression evaluation cost.
+
+### Post-review fixes to the bucket-crossing-skip cache
+
+Two review-confirmed bugs in the cache above, both fixed with a RED-test-first reproduction:
+
+1. **Filter-only zoom dependence misclassified as static.** `isZoomDependent` was derived only
+   from the built layer's paint/layout `updateTriggers` — a style layer whose only `["zoom"]`
+   dependence lives in its `filter` (e.g. `filter: ["<=", ["zoom"], 10]`) with otherwise-static
+   paint produced no updateTrigger, so it was classified static and its stale matched-feature set
+   was reused across a bucket crossing (a real stale-render regression, confirmed with a test
+   where a feature kept rendering past the filter's zoom cutoff). Fixed by also scanning the
+   style layer's `filter` for the `["zoom"]` operator (`filterReferencesZoom`, a cheap recursive
+   token scan — cheaper than threading an `isZoomDependent` flag through `compileFilter`) and
+   OR-ing that into `isZoomDependent`. A filter with no zoom reference is unaffected and keeps the
+   skip optimization.
+2. **`onTileUnload` eviction key mismatch.** The cache is populated keyed on `tileProps.id` (the
+   `TileLayer`-namespaced id, e.g. `"myLayer-source-0,0,0"`), but `onTileUnload` deleted by the
+   raw `Tile2DHeader.id` alone (e.g. `"0,0,0"`) — the keys never matched, so eviction was a silent
+   no-op and `subLayerCache` grew unbounded for the life of the layer. Fixed by reconstructing the
+   same namespaced key inside `onTileUnload` from the `MVTLayer`'s own sub-layer-props id
+   (computed once, shared with the `MVTLayer` constructor call) plus the raw tile id.
+
+Both fixes are covered by dedicated RED-then-GREEN tests
+(`test/modules/geo-layers/maplibre-style-layer/filter-zoom-dependence.node.spec.ts`,
+`test/modules/geo-layers/maplibre-style-layer/sublayer-cache-eviction.node.spec.ts`), and the
+benchmark above was re-run after the fixes — the mostly-static (22/2) row still shows the full
+~9.5–9.7× speedup, confirming the perf win survives; only style layers whose filter (or
+paint/layout) actually references `["zoom"]` now correctly stop skipping regen.

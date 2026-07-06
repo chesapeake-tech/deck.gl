@@ -133,15 +133,20 @@ interface SubLayerCacheEntry {
    * zoom-bucket-crossing regen, and always forces a rebuild regardless of zoom-dependence. */
   data: unknown;
   mapped: Layer | null;
-  /** Whether this style layer's own compiled paint/layout expressions reference `["zoom"]` —
-   * i.e. whether skipping a rebuild across a zoom-bucket crossing could ever be wrong for this
-   * layer. Derived from the built layer's own `updateTriggers` (every mapper function already
-   * sets `zoomBucket(zoom)` vs. `undefined` per accessor via `zoomDependentBucket`/inline —
-   * see style-layer-mappers.ts/symbol-mappers.ts). Conservatively `true` (never skip) when
-   * `mapped` is `null` (this build produced zero matching features) — a style layer can go from
-   * zero matches to some matches purely because its `filter` itself references `["zoom"]` (not
-   * tracked by `updateTriggers`, and rare enough not to warrant its own compiled-expression
-   * plumbing here), so there is nothing safe to compare against on the next crossing. */
+  /** Whether this style layer's own compiled paint/layout expressions OR its `filter` reference
+   * `["zoom"]` — i.e. whether skipping a rebuild across a zoom-bucket crossing could ever be
+   * wrong for this layer. Paint/layout zoom-dependence is derived from the built layer's own
+   * `updateTriggers` (every mapper function already sets `zoomBucket(zoom)` vs. `undefined` per
+   * accessor via `zoomDependentBucket`/inline — see style-layer-mappers.ts/symbol-mappers.ts);
+   * filter zoom-dependence is derived separately via `filterReferencesZoom` (bug fix, review) —
+   * `updateTriggers` alone previously missed it entirely, since `filterFeatures` re-evaluates the
+   * filter against the current `zoom` on every call without ever touching `updateTriggers`, so a
+   * static-paint layer with a zoom-dependent filter was misclassified as fully static and its
+   * stale matched-feature set was reused across a crossing (a real "some -> zero" /
+   * "some -> different subset" regression, not just the first-build-null case below). Also
+   * conservatively `true` (never skip) when `mapped` is `null` (this build produced zero matching
+   * features) — kept as a fallback for any other filter-eval edge case there is nothing safe to
+   * compare against on the next crossing. */
   isZoomDependent: boolean;
   /** `isStyleLayerVisible(styleLayer) && isStyleLayerInZoomRange(styleLayer, zoom)` at build
    * time — rechecked (cheaply, O(1)) on every call so a minzoom/maxzoom range crossing always
@@ -161,6 +166,31 @@ function layerHasZoomDependentAccessor(layer: Layer): boolean {
   if (!triggers) return false;
   for (const key in triggers) {
     if (triggers[key] !== undefined) return true;
+  }
+  return false;
+}
+
+/** Bug fix (review): `layerHasZoomDependentAccessor` only sees a style layer's PAINT/LAYOUT
+ * zoom-dependence (via the built layer's `updateTriggers`) — it has no visibility at all into
+ * the style layer's `filter`, which can reference `["zoom"]` on its own (e.g.
+ * `filter: ["<=", ["zoom"], 10]`) with fully static paint. `filterFeatures` (style-layer-mappers.ts)
+ * re-evaluates that filter against the current `zoom` on every call, so the *matched feature set*
+ * itself changes across a bucket crossing even though no `updateTriggers` entry ever fires —
+ * exactly the "some -> zero" / "some -> different subset" case the old null-only conservative
+ * fallback (see `SubLayerCacheEntry.isZoomDependent`'s doc) did not cover. A cheap recursive scan
+ * for the `["zoom"]` operator (its wire form is always an array whose first element is the
+ * literal string `'zoom'`, e.g. `["zoom"]` alone or nested inside `["<=", ["zoom"], 10]`,
+ * `["interpolate", ["linear"], ["zoom"], ...]`, etc.) is enough to force a rebuild for exactly
+ * the style layers where skipping could ever be wrong, without adding a second compiled-
+ * expression bookkeeping path alongside `compileFilter` (compile-filter.ts currently exposes only
+ * the compiled predicate, not an `isZoomDependent` flag — scanning the raw JSON is cheaper than
+ * threading that through). A filter with no `["zoom"]` anywhere is unaffected and keeps the skip
+ * optimization. */
+function filterReferencesZoom(node: unknown): boolean {
+  if (!Array.isArray(node)) return false;
+  if (node[0] === 'zoom') return true;
+  for (const child of node) {
+    if (filterReferencesZoom(child)) return true;
   }
   return false;
 }
@@ -341,8 +371,18 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
       [key: string]: unknown;
     };
 
+    // Bug fix (review): `TileLayer.renderLayers()` (tile-layer.ts) namespaces the props object it
+    // hands to `renderSubLayers` via its OWN `this.getSubLayerProps({id: tile.id, ...})` call —
+    // i.e. `tileProps.id` below is `${sourceSubLayerProps.id}-${rawTileId}` (e.g.
+    // "myLayer-source-0,0,0"), NOT the raw `Tile2DHeader.id` ("0,0,0") that `onTileUnload`
+    // receives directly from the tileset. Computed once here (identical to the first ctor arg
+    // `MVTLayer` is built with) so `onTileUnload` below can reconstruct the exact same namespaced
+    // key `subLayerCache` was populated under, instead of deleting by the un-namespaced raw id
+    // (which never matches anything in the map — the eviction was previously a silent no-op and
+    // `subLayerCache` grew unbounded for the life of the layer).
+    const sourceSubLayerProps = this.getSubLayerProps({id: 'source'});
     layers.push(
-      new MVTLayer(this.getSubLayerProps({id: 'source'}), {
+      new MVTLayer(sourceSubLayerProps, {
         // Spread (not pick data/tileMatrixSet only) so any other MVTLayer/TileLayer prop the
         // caller sets on `source` (e.g. `fetch`, for a custom/offline loader — see the app
         // verification demo, Task 13) passes through verbatim.
@@ -390,8 +430,13 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // `maxCacheByteSize`) — without this, `subLayerCache` would grow unbounded across a long
         // pan/zoom session (an entry per style layer for every tile ID ever visited, never
         // reclaimed).
+        //
+        // Bug fix (review): `tile.id` here is the RAW `Tile2DHeader.id` (un-namespaced) —
+        // `subLayerCache` is keyed on `tileProps.id` (the namespaced id, see `sourceSubLayerProps`
+        // above), so deleting by `tile.id` alone never matched any entry. Reconstruct the same
+        // namespaced key `renderSubLayers` populated the cache under.
         onTileUnload: (tile: {id: string}) => {
-          subLayerCache.delete(tile.id);
+          subLayerCache.delete(`${sourceSubLayerProps.id}-${tile.id}`);
           sourceOnTileUnload?.(tile);
         },
         renderSubLayers: (tileProps: TileRenderProps) => {
@@ -443,7 +488,10 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
               tileCache.set(styleLayer.id, {
                 data: tileProps.data,
                 mapped,
-                isZoomDependent: mapped ? layerHasZoomDependentAccessor(mapped) : true,
+                isZoomDependent: mapped
+                  ? layerHasZoomDependentAccessor(mapped) ||
+                    filterReferencesZoom((styleLayer as {filter?: unknown}).filter)
+                  : true,
                 inZoomRange: inZoomRangeNow
               });
             }
