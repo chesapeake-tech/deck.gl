@@ -30,16 +30,25 @@ function filterFeatures(
 }
 
 /** Minimal color-agnostic passthrough: `createPropertyExpression({type: 'color'})` already
- * returns a parsed `{r,g,b,a}` (0-1 range) object per the style-spec's own color type (verified
- * against the real `@maplibre/maplibre-gl-style-spec` package) — converts to deck.gl's
- * `[r,g,b,a]` (0-255) `Color` tuple, folding in a separate opacity multiplier where the style
- * separates `-color` and `-opacity` paint properties. */
+ * returns a parsed `{r,g,b,a}` object per the style-spec's own color type (verified against the
+ * real `@maplibre/maplibre-gl-style-spec` package) — converts to deck.gl's `[r,g,b,a]` (0-255)
+ * `Color` tuple, folding in a separate opacity multiplier where the style separates `-color` and
+ * `-opacity` paint properties.
+ *
+ * Review fix (I1): the style-spec's `Color` is PREMULTIPLIED by alpha — `rgba(255,0,0,.5)`
+ * parses to `{r:.5, g:0, b:0, a:.5}`, not `{r:1, g:0, b:0, a:.5}` (verified above against the
+ * real package). Reading `r/g/b` directly (as the previous code did) darkens every
+ * semi-transparent color proportionally to its alpha (a 50%-alpha red rendered at half the
+ * correct red intensity). Un-premultiply by dividing `r/g/b` by `a` before scaling to 0-255;
+ * `a === 0` (fully transparent) is left at `{r:0,g:0,b:0}` — the division is undefined
+ * (0/0) and the color is invisible regardless of RGB. */
 function toRGBA(color: unknown, opacity: number): [number, number, number, number] {
   const c = color as {r: number; g: number; b: number; a: number};
+  const unpremultiply = c.a > 0 ? 1 / c.a : 0;
   return [
-    Math.round(c.r * 255),
-    Math.round(c.g * 255),
-    Math.round(c.b * 255),
+    Math.round(c.r * unpremultiply * 255),
+    Math.round(c.g * unpremultiply * 255),
+    Math.round(c.b * unpremultiply * 255),
     Math.round(c.a * opacity * 255)
   ];
 }
