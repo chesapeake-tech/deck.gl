@@ -52,15 +52,18 @@ function warnLinePlacementOnce(id: string): void {
  * carry these tile-positioning props through to the mapped layers; caught before commit by
  * reasoning through `MVTLayer.renderSubLayers`'s actual prop-mutation behavior, and pinned by
  * this file's `maplibre-style-layer.spec.ts` Mercator-positioning test. */
-export function applyTilePositioning(
-  layer: Layer,
-  tileProps: {
-    modelMatrix?: unknown;
-    coordinateOrigin?: unknown;
-    coordinateSystem?: unknown;
-    extensions?: unknown[];
-  }
-): Layer {
+export interface TileRenderProps {
+  id: string;
+  data: unknown;
+  tile: unknown;
+  modelMatrix?: unknown;
+  coordinateOrigin?: unknown;
+  coordinateSystem?: unknown;
+  extensions?: unknown[];
+  [key: string]: unknown;
+}
+
+export function applyTilePositioning(layer: Layer, tileProps: TileRenderProps): Layer {
   if (tileProps.modelMatrix === undefined) {
     return layer;
   }
@@ -101,11 +104,14 @@ function mapOneStyleLayer(
 
 function toFeatureArray(tileData: unknown): Feature[] {
   if (Array.isArray(tileData)) return tileData as Feature[];
-  // Binary-shape tile content (classic Mercator route, `binary: true`): reuse the loader's own
-  // conversion so style-layer mappers always see a plain Feature[] regardless of MVTLayer's
-  // internal coordinate/shape mode.
+  // Defensive-only in practice: the inner MVTLayer is always constructed with `binary: false`
+  // above, so `tileData` is always already a `Feature[]` (the `Array.isArray` branch). Kept in
+  // case a future caller/override changes that. `binaryToGeojson` returns `Feature | Feature[]`
+  // directly (not a `{features: [...]}` wrapper, corrected after checking the real
+  // @loaders.gl/gis type signature rather than assuming a shape).
   if (tileData) {
-    return (binaryToGeojson(tileData as never) as {features: Feature[]}).features ?? [];
+    const converted = binaryToGeojson(tileData as never);
+    return Array.isArray(converted) ? converted : [converted];
   }
   return [];
 }
@@ -135,8 +141,10 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
 
     layers.push(
       new MVTLayer(this.getSubLayerProps({id: 'source'}), {
-        data: source.data,
-        tileMatrixSet: source.tileMatrixSet,
+        // Spread (not pick data/tileMatrixSet only) so any other MVTLayer/TileLayer prop the
+        // caller sets on `source` (e.g. `fetch`, for a custom/offline loader — see the app
+        // verification demo, Task 13) passes through verbatim.
+        ...source,
         // Style-layer mappers (Tasks 10/11) consume plain GeoJSON Feature[] (`f.properties`,
         // `f.geometry`) and fan each tile out into a *list* of mapped layers, one per matching
         // style layer — not the single-GeoJsonLayer-per-tile shape MVTLayer's `binary: true`
@@ -147,7 +155,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // render in classic Mercator MapViews. Deviation: the plan's Task 12 sketch did not set
         // this and would warn continuously in the Mercator regression case (Task 13).
         binary: false,
-        renderSubLayers: (tileProps: {data: unknown; tile: unknown; [key: string]: unknown}) => {
+        renderSubLayers: (tileProps: TileRenderProps) => {
           const features = toFeatureArray(tileProps.data);
           const sublayers: LayersList = [];
           for (const styleLayer of featureStyleLayers) {
@@ -157,7 +165,16 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
             }
             const mapped = mapOneStyleLayer(styleLayer, features, evaluator, zoom, spriteAtlas);
             if (mapped) {
-              sublayers.push(applyTilePositioning(mapped, tileProps));
+              const positioned = applyTilePositioning(mapped, tileProps);
+              // TileLayer's default renderSubLayers relies on `props.id` (tile-unique, set by
+              // TileLayer before calling this callback) flowing straight into `new
+              // GeoJsonLayer(props)` for per-tile id uniqueness; unlike that default, mapper
+              // functions (Tasks 10/11) hardcode a static `maplibre-${styleLayer.id}` id, which
+              // collides across every sibling tile under the same MVTLayer (LayerManager then
+              // throws "finalized layer cannot be reused" - caught via the app verification
+              // Playwright run, Task 13, not by the node/headless unit tests since none of them
+              // render more than one tile at a time). Re-namespace with the tile's own id here.
+              sublayers.push(positioned.clone({id: `${tileProps.id}-${positioned.id}`}));
             }
           }
           return sublayers;

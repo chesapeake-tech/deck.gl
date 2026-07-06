@@ -47,12 +47,14 @@ pipeline recorded in `.superpowers/sdd/progress.md`.
 
 ## Chunk E — deferred features (largest, last)
 
-- **E1. MVT in CRS views** — wgs84-decode route (generalizing the existing GlobeView path) +
-  tile selection for both real-world source shapes: `_CRSTileset2D` (already generic via
-  `tileMatrixSet`) for CRS-native sources, and `MercatorCRSTileset2D` — auto-selected by
-  `MVTLayer._getTilesetClass()` when no `tileMatrixSet` is set — for the more common classic
-  Mercator-pyramid vector-tile source case (e.g. Esri's "Ocean Reference" service); costs the
-  binary fast path. Shipped — see
+- **E1. MVT in CRS views + MapLibre style adapter** — shipped, both stages. wgs84-decode route
+  (generalizing the existing GlobeView path) + tile selection for both real-world source shapes:
+  `_CRSTileset2D` (already generic via `tileMatrixSet`) for CRS-native sources, and
+  `MercatorCRSTileset2D` — auto-selected by `MVTLayer._getTilesetClass()` when no
+  `tileMatrixSet` is set — for the more common classic Mercator-pyramid vector-tile source case
+  (e.g. Esri's "Ocean Reference" service); costs the binary fast path. Expanded with a new
+  experimental `_MapLibreStyleLayer` (style JSON -> deck.gl layers, style-spec evaluator
+  injected, no new runtime dependency) — see
   `docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md`.
 - **E2. Exact CPU reprojection opt-in (Approach B)** — per-layer flag transforming attributes
   through the real projection; exact at any extent. Spec-first.
