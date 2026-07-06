@@ -112,9 +112,17 @@ export function mapSymbolTextLayer(
     // glyph-PBF fetch/parity with the style's `glyphs` URL).
     fontFamily: 'sans-serif',
     collisionEnabled: true,
-    getCollisionPriority: priority
-      ? (f: unknown) => priority.evaluate(zoom, f as never)
-      : undefined,
+    // Deviation (caught via app verification, Task 13, not by unit tests): `extensions` always
+    // includes `CollisionFilterExtension`, so `getCollisionPriority` must always resolve to a
+    // real accessor. Explicitly setting the prop to `undefined` (rather than omitting the key)
+    // overrides the extension's own `getCollisionPriority` default (0) with `undefined` — deck.gl
+    // prop merging is a plain object spread, so an explicit `undefined` value wins over a
+    // default — which threw "accessor getCollisionPriority is not a function" the first time
+    // this ran in a real browser (a style layer with no `symbol-sort-key`, the common case). Omit
+    // the key entirely instead when there is no compiled priority expression.
+    ...(priority
+      ? {getCollisionPriority: (f: unknown) => priority.evaluate(zoom, f as never)}
+      : {}),
     extensions: [new CollisionFilterExtension()],
     updateTriggers: {
       getText: textField.isZoomDependent ? zoomBucket(zoom) : undefined,

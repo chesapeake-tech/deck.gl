@@ -131,9 +131,15 @@ export function mapFillLayer(
     stroked: Boolean(outlineColor),
     getFillColor: (f: unknown) =>
       toRGBA(fillColor.evaluate(zoom, f as never), opacity.evaluate(zoom, f as never)),
-    getLineColor: outlineColor
-      ? (f: unknown) => toRGBA(outlineColor.evaluate(zoom, f as never), 1)
-      : undefined,
+    // Omit the key (not `getLineColor: undefined`) when there is no outline color: an explicit
+    // `undefined` prop value overrides GeoJsonLayer's own default accessor via deck.gl's
+    // object-spread prop merging, whereas omitting the key preserves it (see the identical,
+    // confirmed-in-browser bug fixed in symbol-mappers.ts's `getCollisionPriority`). Currently
+    // inert either way since `stroked` is coupled to the same `outlineColor` truthiness, but
+    // fixed for consistency/defense-in-depth.
+    ...(outlineColor
+      ? {getLineColor: (f: unknown) => toRGBA(outlineColor.evaluate(zoom, f as never), 1)}
+      : {}),
     updateTriggers: {
       getFillColor: zoomDependentBucket(zoom, fillColor, opacity),
       getLineColor: outlineColor ? zoomDependentBucket(zoom, outlineColor) : undefined
@@ -177,7 +183,10 @@ export function mapLineLayer(
     getLineColor: (f: unknown) => toRGBA(lineColor.evaluate(zoom, f as never), 1),
     getLineWidth: (f: unknown) => lineWidth.evaluate(zoom, f as never),
     extensions: dashArray ? [new PathStyleExtension({dash: true})] : [],
-    getDashArray: dashArray ? (f: unknown) => dashArray.evaluate(zoom, f as never) : undefined,
+    // Omit the key rather than set `undefined` (see mapFillLayer's getLineColor / the
+    // getCollisionPriority fix in symbol-mappers.ts) — inert here too since `PathStyleExtension`
+    // is only added when `dashArray` is set, but kept consistent for the same reason.
+    ...(dashArray ? {getDashArray: (f: unknown) => dashArray.evaluate(zoom, f as never)} : {}),
     updateTriggers: {
       getLineColor: zoomDependentBucket(zoom, lineColor),
       getLineWidth: zoomDependentBucket(zoom, lineWidth),
