@@ -485,3 +485,102 @@ Filed as roadmap follow-ups, not part of this plan: binary-mode CRS support (Dec
 review #5), `symbol-placement: 'line'` true curved labels / `line-gradient` / `fill-pattern` /
 `raster`/`hillshade`/`heatmap` style layers / glyph-PBF font parity (Stage 2 Non-goals),
 continuous zoom re-evaluation (Decisions for review #3), far-field LOD (Chunk B1, unaffected).
+
+## Performance addendum (2026-07-06): zoom-bucket-crossing regen storm — root cause, fix, numbers
+
+The "Quality / performance envelope" section above characterized per-feature style-evaluation
+cost as "bounded by `Math.floor(zoom)` transitions, not by frame rate" — true in the sense that
+it doesn't re-run continuously during camera motion, but incomplete: it did not account for what
+happens *at* one of those bounded transitions. This addendum documents a real-integration finding
+(reported as a stutter zooming a vector basemap in a CRS view) and its fix.
+
+### Root cause
+
+`_MapLibreStyleLayer` keys the inner `MVTLayer`'s `updateTriggers.renderSubLayers` on
+`[zoomBucket(zoom), style]` (`maplibre-style-layer.ts`, "Review fix (C1)"/"Review fix (Round 8
+finding 2)") so that TileLayer regenerates per-tile sublayers when a zoom-interpolated paint
+expression needs re-evaluating. But `TileLayer.updateState` (`tile-layer.ts:240-286`) treats any
+`updateTriggers` change as "regenerate sublayers" for **every cached tile** — it does not (and,
+short of finer-grained triggers, cannot) know that most style layers in a typical style have no
+`["zoom"]`-dependent paint/layout expression at all. The result: crossing a single integer zoom
+boundary re-ran `mapOneStyleLayer` (full filter pass + compiled-expression lookups + a fresh
+`GeoJsonLayer`/`IconLayer`/`TextLayer` construction) for **every style layer × every visible
+tile**, synchronously, in one frame — regardless of whether that style layer's output could have
+possibly changed.
+
+Measured (Node microbenchmark, `test/perf/crs-bench.ts` section 4; see also the pinning test
+`test/modules/geo-layers/maplibre-style-layer/zoom-bucket-regen-skip.node.spec.ts`), before this
+fix, driving the real `renderSubLayers` closure across one zoom-bucket crossing:
+
+| Scale (tiles × style layers (static/zoom-dependent) × features/tile) | Regen time (median) |
+|---|---|
+| 24 × 12 (9/3) × 200 | ~5 ms |
+| 48 × 24 (18/6) × 500 | ~37 ms |
+| 48 × 24 (22/2) × 500 — a realistic mostly-static style | ~37–38 ms |
+
+At 48 visible tiles (a plausible count for a detailed vector basemap at typical zoom) with a
+24-layer style, a single zoom-bucket crossing cost **more than twice a 16 ms (60 fps) frame
+budget** — synchronously, on the main thread — which is exactly the reported hitch. This does not
+even include the GPU buffer re-upload cost of the freshly-constructed `GeoJsonLayer` instances
+that would follow in a real (browser, WebGL) run.
+
+### Fix
+
+Per (tile id, style layer id), memoize the previously-mapped sublayer (`maplibre-style-layer.ts`'s
+new `SubLayerCacheEntry`/`subLayerCache`, invalidated together with the existing `compileCache` on
+style/evaluator identity change — same contract as "Review fix (I6)"). On each
+`renderSubLayers` call, a style layer's cached sublayer is reused **unchanged** (no
+`mapOneStyleLayer` call at all) when:
+
+1. the tile's data reference hasn't changed (a real new tile load always forces a rebuild), AND
+2. its visibility/`minzoom`/`maxzoom` in-range status hasn't flipped (checked freshly every call —
+   O(1), no feature loop), AND
+3. none of its compiled paint/layout expressions is zoom-dependent (derived from the built
+   layer's own `updateTriggers` — every mapper already reports this per accessor via
+   `zoomDependentBucket`/inline checks, so no new compiled-expression bookkeeping was needed).
+
+A style layer that fails any of those checks (has a `["zoom"]`-dependent expression, or just
+crossed its `minzoom`/`maxzoom` boundary, or the tile's content genuinely changed) still rebuilds
+exactly as before — this is a targeted skip, not a change to *what* gets rendered. Two pinning
+tests (`zoom-bucket-regen-skip.node.spec.ts`) confirm both halves: a static layer's mapped
+`GeoJsonLayer.props.data` array is the same reference across a bucket crossing (no rebuild), and a
+zoom-dependent layer's is not (still rebuilds); a third existing/adjacent scenario (a `minzoom`-
+gated, non-zoom-dependent layer) is confirmed to still regenerate exactly when its range flips.
+Bounded memory growth: the per-tile cache entry is evicted via the inner `MVTLayer`'s
+`onTileUnload` when a tile actually drops out of the tile cache.
+
+### Before / after
+
+| Scale | BEFORE (median ms/crossing) | AFTER (median ms/crossing) | Speedup |
+|---|---|---|---|
+| 24 × 12 (9/3) × 200 | ~5 | ~1.1 | ~4.5× |
+| 48 × 24 (18/6) × 500 | ~37 | ~10 | ~3.7× |
+| 48 × 24 (22/2) × 500 (mostly-static style) | ~37–38 | ~3.8–4 | ~9.5× |
+
+The speedup scales with the fraction of style layers that are actually zoom-dependent — most real
+basemap styles (e.g. positron/bright-style vector basemaps) are dominated by static fill/line
+colors with only a handful of zoom-interpolated widths/label sizes, so the mostly-static (22/2)
+row is the more representative real-world number: **roughly an order of magnitude faster**, taking
+the regen well back under a 16 ms frame budget at this tile/feature scale.
+
+### Other measured costs (context for the numbers above)
+
+Run `npx tsx test/perf/crs-bench.ts` for current numbers; representative results from one run:
+
+| Measurement | Result |
+|---|---|
+| `buildWarpedTileMesh` (warped-raster CRS path), N=4 mesh | ~0.01–0.02 ms/tile |
+| `buildWarpedTileMesh`, N=32 mesh | ~0.35 ms/tile |
+| MVT decode, `local`/geojson (baseline, no reprojection) | ~1.6–5 ms/tile (1664 features) |
+| MVT decode, `wgs84`/geojson (CRS feature route — adds per-vertex reprojection) | ~2–3 ms/tile |
+| MVT decode, `local`/binary (classic Mercator — what `MVTLayer` actually uses) | ~7.7–8.2 ms/tile |
+| Style expression compile (first-time parse/AST build) | ~0.01–0.02 ms/expression |
+| Style expression `evaluate()` throughput | ~10M features/sec (~0.1 µs/feature) |
+
+Two notes on reading these: (a) the `binary` shape costs *more* to decode than `geojson`, not
+less, in this microbenchmark — it eagerly builds typed-array/spatial-index structures that
+`geojson` shape defers, so its benefit is downstream (GPU upload, incremental picking), not raw
+parse time; (b) per-feature `evaluate()` throughput is high enough (~10M/sec) that it is not
+itself the bottleneck at any realistic tile/feature scale — the bucket-crossing storm above was
+dominated by the *filter* pass and repeated object construction across every style layer, not by
+per-feature expression evaluation cost.
