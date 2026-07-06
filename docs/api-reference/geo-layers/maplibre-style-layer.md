@@ -75,8 +75,13 @@ add your own alongside the built-in zoom-bucket trigger that drives re-styling o
 
 ##### `evaluator` (Object, required)
 
-`{createPropertyExpression, featureFilter}` — pass `@maplibre/maplibre-gl-style-spec`'s own
-exports directly.
+`{createPropertyExpression, featureFilter, convertFunction?}` — pass
+`@maplibre/maplibre-gl-style-spec`'s own exports directly. `convertFunction` is optional but
+recommended: real-world styles (CARTO, Esri) commonly still author zoom-dependent paint/layout
+as legacy (pre-expression, Mapbox Style Spec v7-era) `{stops: [...]}` "functions" rather than
+expressions, and `createPropertyExpression` rejects a bare `{stops: [...]}` object outright
+("Bare objects invalid") unless it is converted first. Passing `convertFunction` lets the
+adapter do that conversion itself; omit it and a legacy-function style throws that error instead.
 
 ##### `spriteAtlas` (Object, optional)
 
@@ -84,6 +89,20 @@ A resolved sprite sheet for `symbol` icon layers: `{image: string, mapping: Reco
 {x, y, width, height, pixelRatio?, sdf?}>}` — the fetched atlas image URL/data plus its parsed
 sprite JSON mapping (the layer does not fetch `style.sprite` itself, matching
 `IconLayer.iconAtlas`/`iconMapping`'s existing "you provide the resolved asset" contract).
+`_fetchMapLibreSpriteAtlas(spriteBaseUrl, {fetch?, pixelRatio?})` (also exported from
+`@deck.gl/geo-layers`) is a convenience that builds this prop for you: given a style's `sprite`
+base URL, it fetches the matching `.json` + `.png` pair (requesting the `@2x` variant when
+`pixelRatio >= 2`, falling back to `@1x` if the style has none) via plain `fetch` — no new
+runtime dependency — and resolves a ready-to-use `spriteAtlas`. It is invoked by the caller
+*before* constructing the layer; `_MapLibreStyleLayer` itself still never fetches anything.
+
+```js
+import {_fetchMapLibreSpriteAtlas as fetchMapLibreSpriteAtlas} from '@deck.gl/geo-layers';
+
+const spriteAtlas = await fetchMapLibreSpriteAtlas(myStyleJson.sprite, {
+  pixelRatio: window.devicePixelRatio
+});
+```
 
 ## v1 support
 
@@ -101,6 +120,13 @@ substituted with the referenced feature property, matching pre-expression MapLib
 Every style layer honors `source-layer` (matched against the vector tile's own named layer,
 `feature.properties.layerName`), `layout.visibility: 'none'`, and `minzoom`/`maxzoom` — real
 styles rely on all three, commonly scoping a layer by `source-layer` alone with no other filter.
+Legacy (pre-expression) `{stops: [...]}` zoom/property "functions" are normalized into real
+expressions before compiling (given `evaluator.convertFunction`, see above), and a `line-dasharray`
+zoom function whose stops mix array lengths (e.g. `[1]` at one zoom, `[2, 2]` at another — legal,
+since MapLibre's own dasharray semantics are cyclic: `[1]` repeats identically to `[1, 1, ...]`) is
+losslessly cyclic-equalized to a common length before compiling, both so it doesn't fail
+`createPropertyExpression`'s array-length validation and so every evaluated stop is actually the
+same length at runtime, which `PathStyleExtension`'s fixed-size-2 `getDashArray` accessor needs.
 
 Not implemented in v1 (style layers of these types/features are skipped, with a console warning
 naming the offending style-layer `id`): `raster`, `raster-particle`, `hillshade`, `heatmap` style
@@ -110,8 +136,38 @@ for review #4); glyph-PBF font parity (`text-font` is approximated by one browse
 the `["format", ...]` expression (rich multi-run text — throws a clear compile-time error rather
 than silently rendering something wrong, since its result isn't a plain string).
 
-Paint/layout expressions that depend on `["zoom"]` are re-evaluated once per integer zoom level
-(`Math.floor(viewport.zoom)`), not continuously — see the design doc's Decisions for review #3.
+### Style evaluation zoom in CRS views
+
+Paint/layout expressions that depend on `["zoom"]`, and `minzoom`/`maxzoom` gating, are
+re-evaluated once per integer zoom level, not continuously — but the zoom number used is the
+**Mercator-equivalent** zoom, not the raw `viewport.zoom`, whenever the layer is rendered inside a
+non-Mercator CRS `MapView`. A CRS view's zoom is extent-relative (see [`MapView`'s `crs`
+docs](../core/map-view.md#crs)): a projected CRS with a much smaller extent than Web Mercator's
+whole world (e.g. a single UTM zone) reaches the same zoom NUMBER at a far more zoomed-in ground
+scale, so evaluating style expressions and `minzoom`/`maxzoom` gating against the raw CRS zoom
+silently hides every minzoom-gated style layer — most visibly labels, which are almost always
+minzoom-gated. The layer derives the Mercator-equivalent zoom from the viewport's own ground
+resolution (`viewport.metersPerPixel`) instead, which is an exact no-op (identical to
+`viewport.zoom`) for a classic Web Mercator `MapView` — this only changes behavior in a CRS view,
+and there it makes minzoom-gated content (e.g. reference labels) appear at the ground scale a real
+MapLibre/Mercator map would show them at, instead of being hidden.
+
+### `background` style layers and CRS views
+
+A `background` style layer has no source features, so it is rendered by covering the current
+viewport with a filled polygon in `COORDINATE_SYSTEM.LNGLAT` space. In a CRS view this polygon
+covers the viewport's own CRS's valid `extent` (densified and inverse-projected to lnglat), not a
+hardcoded whole-world rectangle — the whole-world rectangle is only valid for Web Mercator (or
+other whole-world) views; a projected CRS with a much smaller domain folds it into a degenerate
+shape that never actually covers the viewport once run through the CRS's `transform.forward`.
+
+### Re-styling on a `style` swap
+
+Passing a new `style` object (identity change, not just a deep-equal one) regenerates the inner
+tile source's already-materialized sublayers on the next render, the same way a zoom-bucket
+crossing already does — swapping styles live (e.g. a basemap-style switcher) restyles cached
+tiles instead of leaving them showing the previous style.
+
 Each style layer's filter/paint/layout expressions are compiled once per `style`+`evaluator`
 identity (not once per tile or per render) and cached for the layer instance's lifetime; passing
 a new `style` or `evaluator` object (not just a deep-equal one) invalidates the cache.
