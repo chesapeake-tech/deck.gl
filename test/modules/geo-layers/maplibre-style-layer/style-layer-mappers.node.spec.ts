@@ -59,6 +59,30 @@ test('mapFillLayer#filters, colors via fill-color, null when nothing matches', (
   expect(noMatch).toBeNull();
 });
 
+// Review finding I3(a): MapLibre's `line-width` is always in CSS pixels; GeoJsonLayer's default
+// `lineWidthUnits` is 'meters', so an unmapped line-width silently scaled with zoom/latitude
+// instead of staying a constant screen-space width.
+test('mapLineLayer#line-width is mapped in pixel units (lineWidthUnits: "pixels")', () => {
+  const lineFeature = {
+    type: 'Feature' as const,
+    properties: {},
+    geometry: {
+      type: 'LineString' as const,
+      coordinates: [
+        [0, 0],
+        [1, 1]
+      ]
+    }
+  };
+  const layer = mapLineLayer(
+    {id: 'border', type: 'line', paint: {'line-color': '#000', 'line-width': 3}},
+    [lineFeature],
+    evaluator,
+    10
+  ) as GeoJsonLayer;
+  expect(layer.props.lineWidthUnits).toBe('pixels');
+});
+
 test('mapLineLayer#applies line-dasharray via PathStyleExtension', () => {
   const lineFeature = {
     type: 'Feature' as const,
@@ -96,6 +120,70 @@ test('mapFillLayer#semi-transparent fill-color un-premultiplies correctly (rgba(
   expect(g).toBe(0);
   expect(b).toBe(0);
   expect(a).toBe(128);
+});
+
+// Review finding I5: `source-layer`, `layout.visibility: 'none'`, and `minzoom`/`maxzoom` were
+// entirely unhandled — every style layer matched every feature from every named vector-tile
+// layer, at every zoom, regardless of these MapLibre-mandatory scoping fields.
+test('mapFillLayer#source-layer scopes to the matching feature.properties.layerName only', () => {
+  const styleLayer = {
+    id: 'water',
+    type: 'fill',
+    'source-layer': 'water',
+    paint: {'fill-color': '#0000ff'}
+  };
+  const waterFeature = {
+    ...polygonFeature,
+    properties: {...polygonFeature.properties, layerName: 'water'}
+  };
+  const buildingFeature = {
+    ...polygonFeature,
+    properties: {...polygonFeature.properties, layerName: 'building'}
+  };
+  const layer = mapFillLayer(
+    styleLayer,
+    [waterFeature, buildingFeature],
+    evaluator,
+    10
+  ) as GeoJsonLayer;
+  expect(layer.props.data).toEqual([waterFeature]);
+});
+
+test('mapFillLayer#layout.visibility "none" suppresses the layer entirely', () => {
+  const styleLayer = {
+    id: 'hidden',
+    type: 'fill',
+    layout: {visibility: 'none'},
+    paint: {'fill-color': '#0000ff'}
+  };
+  expect(mapFillLayer(styleLayer, [polygonFeature], evaluator, 10)).toBeNull();
+});
+
+test('mapFillLayer#minzoom/maxzoom restrict the layer to its declared zoom range', () => {
+  const styleLayer = {
+    id: 'ranged',
+    type: 'fill',
+    minzoom: 8,
+    maxzoom: 12,
+    paint: {'fill-color': '#0000ff'}
+  };
+  expect(mapFillLayer(styleLayer, [polygonFeature], evaluator, 7)).toBeNull();
+  expect(mapFillLayer(styleLayer, [polygonFeature], evaluator, 8)).not.toBeNull();
+  expect(mapFillLayer(styleLayer, [polygonFeature], evaluator, 11.9)).not.toBeNull();
+  expect(mapFillLayer(styleLayer, [polygonFeature], evaluator, 12)).toBeNull();
+});
+
+test('mapBackgroundLayer#layout.visibility "none" and out-of-zoom-range both suppress the background layer', () => {
+  expect(
+    mapBackgroundLayer(
+      {id: 'bg', type: 'background', layout: {visibility: 'none'}, paint: {}},
+      evaluator,
+      10
+    )
+  ).toBeNull();
+  expect(
+    mapBackgroundLayer({id: 'bg', type: 'background', minzoom: 12, paint: {}}, evaluator, 10)
+  ).toBeNull();
 });
 
 test('mapFillExtrusionLayer#extruded true, getElevation from fill-extrusion-height', () => {

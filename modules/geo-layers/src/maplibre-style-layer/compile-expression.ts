@@ -75,12 +75,60 @@ function toFullPropertySpec(propertySpec: unknown): Record<string, unknown> {
  * literal-wrapping before parsing; do it here so mapper call sites can pass idiomatic style
  * JSON values without pre-wrapping them. Expression arrays (e.g. `["get", "x"]`, `["==", ...]`)
  * always start with a string operator and are left untouched. */
-function normalizeExpressionInput(value: unknown): unknown {
-  if (Array.isArray(value) && value.length > 0 && typeof value[0] !== 'string') {
-    return ['literal', value];
+/** Review fix (M3): the legacy (pre-expression, Mapbox Style Spec v7-era) `"{token}"` string
+ * syntax — e.g. `text-field: "{name}"`, still common in older/hand-written styles — is NOT
+ * token-substituted by `createPropertyExpression` itself; handed through unmodified it parses
+ * as a `'constant'` string expression that always evaluates to the literal text
+ * `"{name}"` (verified against the real package), never the feature's `name` property.
+ * Upstream mapbox-gl-js/maplibre-gl-js perform this token conversion in their own style-layer
+ * processing, one layer above `createPropertyExpression` — replicate it here as an equivalent
+ * `["concat", ...]` expression (mixing literal text runs with `["get", token]` lookups) so it
+ * goes through the same compiled/cached/zoom-aware path as every other expression. A string
+ * with no `{...}` token is returned unchanged (the overwhelmingly common case — most style
+ * values aren't legacy token strings). */
+function convertLegacyTokenString(value: unknown): unknown {
+  if (typeof value !== 'string' || !/\{[^{}]+\}/.test(value)) {
+    return value;
   }
-  return value;
+  const parts: unknown[] = ['concat'];
+  const tokenPattern = /\{([^{}]+)\}/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  // eslint-disable-next-line no-cond-assign
+  while ((match = tokenPattern.exec(value))) {
+    if (match.index > lastIndex) parts.push(value.slice(lastIndex, match.index));
+    parts.push(['get', match[1]]);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < value.length) parts.push(value.slice(lastIndex));
+  return parts;
 }
+
+/** A plain (non-`['literal', ...]`-wrapped) array value — e.g. `line-dasharray: [2, 1]`, the
+ * idiomatic way to write it in a MapLibre style JSON — parses as an *invalid* expression
+ * (`isExpression()` requires the first element to be a known operator string), not as a
+ * constant, if handed to `createPropertyExpression` unmodified. Real MapLibre style-layer
+ * processing (`normalizePropertyExpression`'s callers upstream) performs this same
+ * literal-wrapping before parsing; do it here so mapper call sites can pass idiomatic style
+ * JSON values without pre-wrapping them. Expression arrays (e.g. `["get", "x"]`, `["==", ...]`)
+ * always start with a string operator and are left untouched. */
+function normalizeExpressionInput(value: unknown): unknown {
+  const detokenized = convertLegacyTokenString(value);
+  if (Array.isArray(detokenized) && detokenized.length > 0 && typeof detokenized[0] !== 'string') {
+    return ['literal', detokenized];
+  }
+  return detokenized;
+}
+
+/** Review fix (I6): a cache shared across every `compileExpression`/`compileFilter` call for one
+ * style (constructed once per style+evaluator identity by the composite's `updateState` — see
+ * `maplibre-style-layer.ts`), keyed on the paint/layout `value` reference (stable across tile
+ * renders and zoom-bucket re-renders because it's read from the same `style.layers[...].paint`
+ * object every time, not recreated). Compiling a MapLibre expression is real parse/validate
+ * work (`createPropertyExpression`'s own AST build) — without this cache it reran once per
+ * style layer *per tile render*, including every zoom-bucket-triggered re-render the C1 fix
+ * added, which is exactly the "clean substrate for C1" the review asked for. */
+export type CompileCache = Map<unknown, unknown>;
 
 /** Compiles one paint/layout property value once via the injected evaluator's
  * `createPropertyExpression`, returning a per-feature evaluator plus whether it needs
@@ -88,8 +136,11 @@ function normalizeExpressionInput(value: unknown): unknown {
 export function compileExpression<T>(
   value: unknown,
   propertySpec: unknown,
-  evaluator: MapLibreStyleEvaluator
+  evaluator: MapLibreStyleEvaluator,
+  cache?: CompileCache
 ): CompiledExpression<T> {
+  const cached = cache?.get(value) as CompiledExpression<T> | undefined;
+  if (cached) return cached;
   // Review fix (C2): the injected evaluator is a structural contract (Decisions for review #2),
   // not a typechecked import — a caller can hand in the wrong shape (e.g. a partial mock, or a
   // typo'd property name) and get no compile-time signal. Fail fast with a clear message rather
@@ -129,7 +180,7 @@ export function compileExpression<T>(
     throw new Error(`Invalid MapLibre style expression: ${JSON.stringify(value)}`);
   }
   const isZoomDependent = compiled.kind === 'camera' || compiled.kind === 'composite';
-  return {
+  const compiledExpression: CompiledExpression<T> = {
     isZoomDependent,
     // Review fix (C3): the same VectorTileFeature numeric geometry-type shim compileFilter uses
     // — an ["geometry-type"] operand inside a paint/layout expression needs it too, or it
@@ -137,4 +188,6 @@ export function compileExpression<T>(
     evaluate: (zoom, feature) =>
       compiled.evaluate({zoom}, withGeometryTypeCode(feature as never) as never) as T
   };
+  cache?.set(value, compiledExpression);
+  return compiledExpression;
 }
