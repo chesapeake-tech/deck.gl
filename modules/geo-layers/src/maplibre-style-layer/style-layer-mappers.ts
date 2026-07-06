@@ -9,6 +9,7 @@ import type {Feature} from 'geojson';
 
 import {compileFilter} from './compile-filter';
 import {compileExpression, zoomBucket} from './compile-expression';
+import type {CompileCache} from './compile-expression';
 import type {MapLibreStyleEvaluator} from './types';
 
 export type StyleLayer = {
@@ -17,16 +18,60 @@ export type StyleLayer = {
   filter?: unknown;
   paint?: Record<string, unknown>;
   layout?: Record<string, unknown>;
+  minzoom?: number;
+  maxzoom?: number;
+  'source-layer'?: string;
 };
 
-function filterFeatures(
+/** Review fix (I5): `layout.visibility: 'none'` (a style-layer-level on/off switch, independent
+ * of `filter`) — a real style commonly ships a layer with `visibility: 'none'` to mean "defined
+ * but not currently shown" (e.g. toggled by a style-switcher UI outside the adapter's scope).
+ * Unhandled, such a layer rendered exactly as if it were visible. */
+export function isStyleLayerVisible(styleLayer: StyleLayer): boolean {
+  return styleLayer.layout?.visibility !== 'none';
+}
+
+/** Review fix (I5): `minzoom`/`maxzoom` (style-layer-level, MapLibre semantics: rendered when
+ * `minzoom <= zoom < maxzoom`) — a real style relies on these to swap layer styling by zoom
+ * band (e.g. a coarse `fill` layer below z10, a detailed one above); unhandled, every style
+ * layer rendered at every zoom regardless of its declared range. */
+export function isStyleLayerInZoomRange(styleLayer: StyleLayer, zoom: number): boolean {
+  const {minzoom, maxzoom} = styleLayer;
+  if (minzoom !== undefined && zoom < minzoom) return false;
+  if (maxzoom !== undefined && zoom >= maxzoom) return false;
+  return true;
+}
+
+/** Review fix (I5): `source-layer` scopes a style layer to one named layer inside the vector
+ * tile (matched against the MVT loader's own `feature.properties.layerName`,
+ * `modules/geo-layers/src/mvt-layer/mvt-layer.ts`'s `getFeatureLayerName` — confirmed against
+ * `@loaders.gl/mvt`'s `parse-mvt.js`, which injects the tile's named layer into
+ * `properties.layerName` for exactly this purpose). Real vector styles scope almost every
+ * layer by `source-layer` alone (with no other distinguishing filter) — unhandled, every style
+ * layer matched every feature from every named layer in the tile, badly over-rendering (e.g. a
+ * `water` fill style layer painting `building`/`road` polygons too). No `source-layer` set on
+ * the style layer means "match every named layer" (a style-JSON author's choice, not a gap). */
+function matchesSourceLayer(styleLayer: StyleLayer, feature: Feature): boolean {
+  const sourceLayer = styleLayer['source-layer'];
+  if (sourceLayer === undefined) return true;
+  return (feature.properties as {layerName?: string} | null)?.layerName === sourceLayer;
+}
+
+export function filterFeatures(
   styleLayer: StyleLayer,
   features: Feature[],
   evaluator: MapLibreStyleEvaluator,
-  zoom: number
+  zoom: number,
+  cache?: CompileCache
 ): Feature[] {
-  const filter = compileFilter(styleLayer.filter, evaluator);
-  return features.filter(f => filter(zoom, f as {properties: Record<string, unknown>}));
+  if (!isStyleLayerVisible(styleLayer) || !isStyleLayerInZoomRange(styleLayer, zoom)) {
+    return [];
+  }
+  const filter = compileFilter(styleLayer.filter, evaluator, cache);
+  return features.filter(
+    f =>
+      matchesSourceLayer(styleLayer, f) && filter(zoom, f as {properties: Record<string, unknown>})
+  );
 }
 
 /** Minimal color-agnostic passthrough: `createPropertyExpression({type: 'color'})` already
@@ -42,7 +87,7 @@ function filterFeatures(
  * correct red intensity). Un-premultiply by dividing `r/g/b` by `a` before scaling to 0-255;
  * `a === 0` (fully transparent) is left at `{r:0,g:0,b:0}` — the division is undefined
  * (0/0) and the color is invisible regardless of RGB. */
-function toRGBA(color: unknown, opacity: number): [number, number, number, number] {
+export function toRGBA(color: unknown, opacity: number): [number, number, number, number] {
   const c = color as {r: number; g: number; b: number; a: number};
   const unpremultiply = c.a > 0 ? 1 / c.a : 0;
   return [
@@ -53,7 +98,7 @@ function toRGBA(color: unknown, opacity: number): [number, number, number, numbe
   ];
 }
 
-function zoomDependentBucket(
+export function zoomDependentBucket(
   zoom: number,
   ...compiled: Array<{isZoomDependent: boolean} | null | undefined>
 ): number | undefined {
@@ -65,18 +110,27 @@ export function mapBackgroundLayer(
   styleLayer: StyleLayer,
   evaluator: MapLibreStyleEvaluator,
   zoom: number,
-  coveringFeature?: Feature
+  coveringFeature?: Feature,
+  cache?: CompileCache
 ): Layer | null {
+  // Review fix (I5): `background` has no source features to run through `filterFeatures`, but
+  // still needs the same `visibility`/`minzoom`/`maxzoom` honoring every other style-layer type
+  // gets.
+  if (!isStyleLayerVisible(styleLayer) || !isStyleLayerInZoomRange(styleLayer, zoom)) {
+    return null;
+  }
   const paint = styleLayer.paint ?? {};
   const color = compileExpression<string>(
     paint['background-color'] ?? '#000000',
     {type: 'color'},
-    evaluator
+    evaluator,
+    cache
   );
   const opacity = compileExpression<number>(
     paint['background-opacity'] ?? 1,
     {type: 'number'},
-    evaluator
+    evaluator,
+    cache
   );
   const feature: Feature =
     coveringFeature ??
@@ -113,24 +167,27 @@ export function mapFillLayer(
   styleLayer: StyleLayer,
   features: Feature[],
   evaluator: MapLibreStyleEvaluator,
-  zoom: number
+  zoom: number,
+  cache?: CompileCache
 ): Layer | null {
-  const matched = filterFeatures(styleLayer, features, evaluator, zoom);
+  const matched = filterFeatures(styleLayer, features, evaluator, zoom, cache);
   if (matched.length === 0) return null;
 
   const paint = styleLayer.paint ?? {};
   const fillColor = compileExpression<string>(
     paint['fill-color'] ?? '#000000',
     {type: 'color'},
-    evaluator
+    evaluator,
+    cache
   );
   const opacity = compileExpression<number>(
     paint['fill-opacity'] ?? 1,
     {type: 'number'},
-    evaluator
+    evaluator,
+    cache
   );
   const outlineColor = paint['fill-outline-color']
-    ? compileExpression<string>(paint['fill-outline-color'], {type: 'color'}, evaluator)
+    ? compileExpression<string>(paint['fill-outline-color'], {type: 'color'}, evaluator, cache)
     : null;
 
   return new GeoJsonLayer({
@@ -160,27 +217,31 @@ export function mapLineLayer(
   styleLayer: StyleLayer,
   features: Feature[],
   evaluator: MapLibreStyleEvaluator,
-  zoom: number
+  zoom: number,
+  cache?: CompileCache
 ): Layer | null {
-  const matched = filterFeatures(styleLayer, features, evaluator, zoom);
+  const matched = filterFeatures(styleLayer, features, evaluator, zoom, cache);
   if (matched.length === 0) return null;
 
   const paint = styleLayer.paint ?? {};
   const lineColor = compileExpression<string>(
     paint['line-color'] ?? '#000000',
     {type: 'color'},
-    evaluator
+    evaluator,
+    cache
   );
   const lineWidth = compileExpression<number>(
     paint['line-width'] ?? 1,
     {type: 'number'},
-    evaluator
+    evaluator,
+    cache
   );
   const dashArray = paint['line-dasharray']
     ? compileExpression<[number, number]>(
         paint['line-dasharray'],
         {type: 'array', value: 'number', length: 2},
-        evaluator
+        evaluator,
+        cache
       )
     : null;
 
@@ -189,6 +250,10 @@ export function mapLineLayer(
     data: matched,
     stroked: true,
     filled: false,
+    // Review fix (I3a): MapLibre's `line-width` is always CSS pixels; GeoJsonLayer/PathLayer
+    // default `lineWidthUnits` to 'meters', which scales the stroke with zoom/latitude instead
+    // of keeping it a constant screen-space width.
+    lineWidthUnits: 'pixels',
     getLineColor: (f: unknown) => toRGBA(lineColor.evaluate(zoom, f as never), 1),
     getLineWidth: (f: unknown) => lineWidth.evaluate(zoom, f as never),
     extensions: dashArray ? [new PathStyleExtension({dash: true})] : [],
@@ -208,24 +273,27 @@ export function mapFillExtrusionLayer(
   styleLayer: StyleLayer,
   features: Feature[],
   evaluator: MapLibreStyleEvaluator,
-  zoom: number
+  zoom: number,
+  cache?: CompileCache
 ): Layer | null {
-  const matched = filterFeatures(styleLayer, features, evaluator, zoom);
+  const matched = filterFeatures(styleLayer, features, evaluator, zoom, cache);
   if (matched.length === 0) return null;
 
   const paint = styleLayer.paint ?? {};
   const fillColor = compileExpression<string>(
     paint['fill-extrusion-color'] ?? '#cccccc',
     {type: 'color'},
-    evaluator
+    evaluator,
+    cache
   );
   const height = compileExpression<number>(
     paint['fill-extrusion-height'] ?? 0,
     {type: 'number'},
-    evaluator
+    evaluator,
+    cache
   );
   const base = paint['fill-extrusion-base']
-    ? compileExpression<number>(paint['fill-extrusion-base'], {type: 'number'}, evaluator)
+    ? compileExpression<number>(paint['fill-extrusion-base'], {type: 'number'}, evaluator, cache)
     : null;
 
   return new GeoJsonLayer({
