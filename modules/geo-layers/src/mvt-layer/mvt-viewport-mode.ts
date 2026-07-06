@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import type {Viewport} from '@deck.gl/core';
-import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
+import {PROJECTION_MODE, type Viewport} from '@deck.gl/core';
 
 /** True when `MVTLayer` should use the "feature route": tile-local coordinates decoded to
  * plain lnglat (loader `coordinates: 'wgs84'`), `binary` forced `false`, no Mercator

@@ -11,9 +11,9 @@ import {
   GetPickingInfoParams,
   Viewport,
   COORDINATE_SYSTEM,
-  DefaultProps
+  DefaultProps,
+  PROJECTION_MODE
 } from '@deck.gl/core';
-import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import {GeoJsonLayer, GeoJsonLayerProps} from '@deck.gl/layers';
 import {ClipExtension} from '@deck.gl/extensions';
 

@@ -13,6 +13,7 @@ export {
   VERSION,
   COORDINATE_SYSTEM,
   OPERATION,
+  PROJECTION_MODE,
   UNIT,
   // Main class
   Deck,
