@@ -43,7 +43,10 @@ test('MapLibreStyleLayer#renders a background layer and one mapped fill layer, s
         evaluator
       },
       onAfterUpdate: ({subLayers}: {subLayers: any[]}) => {
-        expect(subLayers.some(l => l.id.includes('maplibre-bg'))).toBe(true);
+        // Review fix (M1): the background sublayer is now routed through
+        // `this.getSubLayerProps` (id namespaced under the composite's own id, e.g.
+        // `<compositeId>-bg`, not the mapper's old static `maplibre-bg`).
+        expect(subLayers.some(l => l.id.endsWith('-bg'))).toBe(true);
         expect(subLayers.some(l => l instanceof MVTLayer)).toBe(true);
       }
     }
