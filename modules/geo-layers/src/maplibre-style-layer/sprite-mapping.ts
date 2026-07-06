@@ -18,14 +18,21 @@ export interface DeckIconMappingEntry {
   anchorX?: number;
   anchorY?: number;
   mask?: boolean;
+  /** Review fix (I3b): deck.gl's own atlas rendering doesn't need this (the atlas image is
+   * sampled at its native resolution), but it must be carried through — not dropped — because
+   * `icon-size` (mapSymbolIconLayer) is a multiplier of the sprite's *native/logical* size,
+   * which is `height / pixelRatio`, not the raw atlas rect `height`. Defaults to 1 (a MapLibre
+   * sprite JSON entry with no `pixelRatio` is a 1x/non-retina sprite). */
+  pixelRatio: number;
 }
 
 export type DeckIconMapping = Record<string, DeckIconMappingEntry>;
 
 /** A MapLibre/Mapbox sprite JSON entry (`{x,y,width,height,pixelRatio,sdf}`) is almost exactly
- * deck.gl's `IconMapping` entry shape — same rectangle keys, no restructuring. Only
- * `pixelRatio` (deck.gl doesn't need it; the atlas image is used at its native resolution) is
- * dropped and `sdf` (recolorable single-channel icon) is renamed to deck.gl's `mask`. */
+ * deck.gl's `IconMapping` entry shape — same rectangle keys, no restructuring. `sdf`
+ * (recolorable single-channel icon) is renamed to deck.gl's `mask`; `pixelRatio` is carried
+ * through (Review fix I3b — previously dropped, needed by the icon-size mapping) rather than
+ * removed. */
 export function spriteToIconMapping(sprite: MapLibreSpriteAtlas['mapping']): DeckIconMapping {
   const mapping: DeckIconMapping = {};
   for (const [name, entry] of Object.entries(sprite)) {
@@ -34,7 +41,8 @@ export function spriteToIconMapping(sprite: MapLibreSpriteAtlas['mapping']): Dec
       y: entry.y,
       width: entry.width,
       height: entry.height,
-      mask: Boolean(entry.sdf)
+      mask: Boolean(entry.sdf),
+      pixelRatio: entry.pixelRatio ?? 1
     };
   }
   return mapping;

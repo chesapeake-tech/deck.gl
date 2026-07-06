@@ -73,6 +73,31 @@ test('compileExpression#evaluator-shape guard: throws a clear error when createP
 // Review finding C3: an expression's ["geometry-type"] operand needs the same VectorTileFeature
 // numeric-code shim as featureFilter's $type — a paint expression keyed on geometry-type must
 // not silently evaluate against `feature.type === 'Feature'`.
+// Review finding M3: legacy "{token}" text-field strings (pre-expression style-spec syntax,
+// still common in hand-written styles) must be substituted with the feature's own property
+// value, not passed through literally as the braces-and-all text.
+test('compileExpression#legacy "{token}" string is substituted with the feature property, not passed through literally', () => {
+  const {evaluate} = compileExpression<string>('{name}', {type: 'string'}, evaluator);
+  expect(evaluate(10, {properties: {name: 'Overfalls'}})).toBe('Overfalls');
+});
+
+test('compileExpression#legacy mixed "prefix {token} suffix" string interpolates the token in place', () => {
+  const {evaluate} = compileExpression<string>('Depth: {depth}m', {type: 'string'}, evaluator);
+  expect(evaluate(10, {properties: {depth: 42}})).toBe('Depth: 42m');
+});
+
+// Review finding M3 (second half): a `["format", ...]` text-field expression is a real
+// style-spec construct the adapter doesn't support (its evaluate() result is a rich
+// "Formatted" object, not a plain string a TextLayer getText accessor can render) — it should
+// surface as the SAME clear compile-time error the C2 fix already produces for any invalid
+// expression (a `{type: 'string'}` propertySpec naturally rejects `format`'s `Formatted`
+// result type), not an opaque runtime failure.
+test('compileExpression#["format", ...] surfaces a clear error via the C2 error path (unsupported by a string propertySpec)', () => {
+  expect(() =>
+    compileExpression<string>(['format', ['get', 'name'], {}], {type: 'string'}, evaluator)
+  ).toThrow(/formatted/i);
+});
+
 test('compileExpression#["geometry-type"] expression evaluates against the GeoJSON feature\'s actual geometry', () => {
   const {evaluate} = compileExpression<string>(
     ['case', ['==', ['geometry-type'], 'Polygon'], 'poly', 'other'],
