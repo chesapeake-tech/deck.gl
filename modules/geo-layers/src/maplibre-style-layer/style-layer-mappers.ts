@@ -236,10 +236,14 @@ export function mapLineLayer(
     evaluator,
     cache
   );
+  // Review fix (Round 8 finding, fork feedback #4): no hardcoded `length` here — a real style's
+  // `line-dasharray` zoom function can mix stop lengths (CARTO: `[1]` at z5, `[2, 2]` at z7);
+  // `compileExpression` equalizes them (cyclic repeat to their LCM) and reports the resulting
+  // length itself, rather than this call site assuming every style always uses 2-element stops.
   const dashArray = paint['line-dasharray']
-    ? compileExpression<[number, number]>(
+    ? compileExpression<number[]>(
         paint['line-dasharray'],
-        {type: 'array', value: 'number', length: 2},
+        {type: 'array', value: 'number'},
         evaluator,
         cache
       )
@@ -260,7 +264,19 @@ export function mapLineLayer(
     // Omit the key rather than set `undefined` (see mapFillLayer's getLineColor / the
     // getCollisionPriority fix in symbol-mappers.ts) — inert here too since `PathStyleExtension`
     // is only added when `dashArray` is set, but kept consistent for the same reason.
-    ...(dashArray ? {getDashArray: (f: unknown) => dashArray.evaluate(zoom, f as never)} : {}),
+    //
+    // `PathStyleExtension.getDashArray` only accepts a 2-tuple `[dashSize, gapSize]`; a
+    // (rare, beyond v1's dasharray support) style whose equalized stop length exceeds 2 still
+    // evaluates a valid, LCM-equalized array here (see `compileExpression`'s array-stop
+    // handling) — `instanceDashArrays`' fixed `size: 2` GPU attribute layout takes its first two
+    // elements and silently ignores the rest, the same graceful degrade as any other
+    // fixed-size accessor handed a longer array.
+    ...(dashArray
+      ? {
+          getDashArray: (f: unknown) =>
+            dashArray.evaluate(zoom, f as never) as unknown as [number, number]
+        }
+      : {}),
     updateTriggers: {
       getLineColor: zoomDependentBucket(zoom, lineColor),
       getLineWidth: zoomDependentBucket(zoom, lineWidth),
