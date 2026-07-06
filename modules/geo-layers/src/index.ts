@@ -50,3 +50,6 @@ export type {TileMatrixSet, TileMatrix} from './tileset-2d/index';
 
 export {default as _WarpedTileLayer} from './warped-tile-layer/warped-tile-layer';
 export type {WarpedTileLayerProps as _WarpedTileLayerProps} from './warped-tile-layer/warped-tile-layer';
+
+export {MercatorCRSTileset2D as _MercatorCRSTileset2D} from './warped-tile-layer/mercator-crs-tileset-2d';
+export type {MercatorCRSTileset2DProps as _MercatorCRSTileset2DProps} from './warped-tile-layer/mercator-crs-tileset-2d';
