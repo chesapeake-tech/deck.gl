@@ -13,6 +13,7 @@ import {
   COORDINATE_SYSTEM,
   DefaultProps
 } from '@deck.gl/core';
+import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import {GeoJsonLayer, GeoJsonLayerProps} from '@deck.gl/layers';
 import {ClipExtension} from '@deck.gl/extensions';
 
@@ -130,6 +131,15 @@ export default class MVTLayer<
     super.initializeState();
     // GlobeView/CRS views don't work well with binary data
     const binary = usesFeatureRoute(this.context.viewport) ? false : this.props.binary;
+
+    if (this.context.viewport.projectionMode === PROJECTION_MODE.CRS && !this.props.tileMatrixSet) {
+      log.warn(
+        `MVTLayer ${this.id}: CRS MapView without \`tileMatrixSet\` is unsupported — tiles ` +
+          'will be requested using the Mercator XYZ scheme, which does not match a CRS-native ' +
+          'source. Set `tileMatrixSet` (see docs/api-reference/geo-layers/mvt-layer.md#crs-views).'
+      )();
+    }
+
     this.setState({
       binary,
       data: null,
