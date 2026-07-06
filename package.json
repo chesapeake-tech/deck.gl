@@ -53,6 +53,7 @@
     "@luma.gl/effects": "^9.4.0",
     "@luma.gl/webgl": "^9.4.0",
     "@luma.gl/webgpu": "^9.4.0",
+    "@maplibre/maplibre-gl-style-spec": "^24.3.1",
     "@math.gl/proj4": "^4.1.0",
     "@probe.gl/bench": "^4.1.1",
     "@probe.gl/test-utils": "^4.1.1",
