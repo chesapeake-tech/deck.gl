@@ -207,6 +207,10 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
     tileset: Tileset2D | null;
     isLoaded: boolean;
     frameNumber?: number;
+    /** The `viewport.projectionMode` the current `tileset` was created under — compared in
+     * `updateState` alongside `tileMatrixSet` identity to decide whether to recreate the
+     * tileset (some subclasses' `_getTilesetClass()`, e.g. `MVTLayer`, depend on it). */
+    tilesetProjectionMode?: number;
   };
 
   initializeState() {
@@ -245,15 +249,27 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
       (changeFlags.updateTriggersChanged &&
         (changeFlags.updateTriggersChanged.all || changeFlags.updateTriggersChanged.getTileData));
 
+    // Reviewer-triaged fast-follow: `_getTilesetClass()` (overridden by some subclasses, e.g.
+    // `MVTLayer`, to auto-route between `Tileset2D`/`CRSTileset2D`/`MercatorCRSTileset2D` based
+    // on `this.context.viewport.projectionMode`) can depend on the viewport's projection mode,
+    // not just `tileMatrixSet` identity. Without also invalidating on a projectionMode change, a
+    // live CRS<->Mercator view swap on the same layer instance kept the stale tileset (built for
+    // the old projection, e.g. a `MercatorCRSTileset2D` under a now-classic-Mercator viewport)
+    // instead of recreating it via the now-correct `_getTilesetClass()` answer.
+    const projectionMode = this.context.viewport?.projectionMode;
     // Deep comparison (matching the prop's `compare` semantics) so a spread-but-equal
     // tileMatrixSet object does not needlessly discard the tile cache
-    if (tileset && !deepEqual(props.tileMatrixSet, oldProps.tileMatrixSet, -1)) {
+    if (
+      tileset &&
+      (!deepEqual(props.tileMatrixSet, oldProps.tileMatrixSet, -1) ||
+        projectionMode !== this.state.tilesetProjectionMode)
+    ) {
       tileset.finalize();
       tileset = null;
     }
     if (!tileset) {
       tileset = new (this._getTilesetClass())(this._getTilesetOptions());
-      this.setState({tileset});
+      this.setState({tileset, tilesetProjectionMode: projectionMode});
     } else if (propsChanged) {
       tileset.setOptions(this._getTilesetOptions());
 
