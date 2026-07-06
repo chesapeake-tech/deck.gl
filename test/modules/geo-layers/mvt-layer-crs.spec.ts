@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {test, expect} from 'vitest';
-import {MapView, COORDINATE_SYSTEM} from '@deck.gl/core';
+import {test, expect, vi} from 'vitest';
+import {MapView, COORDINATE_SYSTEM, log} from '@deck.gl/core';
 import {testLayerAsync} from '@deck.gl/test-utils/vitest';
 import {MVTLayer, _CRSTileset2D as CRSTileset2D} from '@deck.gl/geo-layers';
 import {ClipExtension} from '@deck.gl/extensions';
@@ -73,4 +73,20 @@ test('MVTLayer#renderSubLayers: CRS route sublayer has no ClipExtension, plain l
   // render time) - not overridden to CARTESIAN, unlike the Mercator route.
   expect(sub.props.coordinateSystem).toBe(COORDINATE_SYSTEM.DEFAULT);
   expect((sub.props.extensions || []).some((e: unknown) => e instanceof ClipExtension)).toBe(false);
+});
+
+test('MVTLayer#CRS MapView without tileMatrixSet warns once', () => {
+  const warnSpy = vi.spyOn(log, 'warn');
+  const view = new MapView({crs: UTM18N});
+  const viewport = view.makeViewport({
+    width: 800,
+    height: 600,
+    viewState: {longitude: -72, latitude: 40, zoom: 3}
+  })!;
+  const layer = new MVTLayer({data: 'https://example.com/tiles/{z}/{x}/{y}.mvt'});
+  // @ts-expect-error - unit-level context injection, mirrors the renderSubLayers test above
+  layer.context = {viewport, layerManager: null, deck: null};
+  (layer as any).initializeState();
+  expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('tileMatrixSet'));
+  warnSpy.mockRestore();
 });
