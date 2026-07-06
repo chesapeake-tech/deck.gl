@@ -51,3 +51,34 @@ test('compileExpression#array-typed constant (line-dasharray) does not need lite
   );
   expect(evaluate(10, {properties: {}})).toEqual([2, 1]);
 });
+
+// Review finding C2: `createPropertyExpression` returns
+// `{result: 'error', value: ExpressionParsingError[]}` on failure — `value` is a truthy array,
+// so the old `if (!compiled) throw` never fired; downstream code then called `.kind`/`.evaluate`
+// on an array of error objects, producing an opaque "evaluate is not a function" deep inside a
+// render pass instead of a clear compile-time error.
+test('compileExpression#throws a clear error (not a silent pass-through) when the expression fails to parse', () => {
+  expect(() => compileExpression<number>(['invalid-op', 'x'], {type: 'number'}, evaluator)).toThrow(
+    /invalid-op|Unknown expression/i
+  );
+});
+
+test('compileExpression#evaluator-shape guard: throws a clear error when createPropertyExpression is not a function', () => {
+  const brokenEvaluator = {createPropertyExpression: undefined, featureFilter} as any;
+  expect(() => compileExpression<number>(5, {type: 'number'}, brokenEvaluator)).toThrow(
+    /createPropertyExpression/i
+  );
+});
+
+// Review finding C3: an expression's ["geometry-type"] operand needs the same VectorTileFeature
+// numeric-code shim as featureFilter's $type — a paint expression keyed on geometry-type must
+// not silently evaluate against `feature.type === 'Feature'`.
+test('compileExpression#["geometry-type"] expression evaluates against the GeoJSON feature\'s actual geometry', () => {
+  const {evaluate} = compileExpression<string>(
+    ['case', ['==', ['geometry-type'], 'Polygon'], 'poly', 'other'],
+    {type: 'string'},
+    evaluator
+  );
+  expect(evaluate(10, {properties: {}, geometry: {type: 'Polygon'}} as any)).toBe('poly');
+  expect(evaluate(10, {properties: {}, geometry: {type: 'Point'}} as any)).toBe('other');
+});
