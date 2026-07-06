@@ -2,13 +2,7 @@
   {
     "type": "category",
     "label": "Overview",
-    "items": [
-      "README",
-      "whats-new",
-      "upgrade-guide",
-      "contributing",
-      "faq"
-    ]
+    "items": ["README", "whats-new", "upgrade-guide", "contributing", "faq"]
   },
   {
     "type": "category",
@@ -127,6 +121,7 @@
           "api-reference/geo-layers/tile-layer",
           "api-reference/geo-layers/crs-tileset-2d",
           "api-reference/geo-layers/warped-tile-layer",
+          "api-reference/geo-layers/maplibre-style-layer",
           "api-reference/geo-layers/tile-3d-layer",
           "api-reference/geo-layers/trips-layer",
           "api-reference/geo-layers/wms-layer"
@@ -146,9 +141,7 @@
       {
         "type": "category",
         "label": "Scripting Interface",
-        "items": [
-          "api-reference/core/deckgl"
-        ]
+        "items": ["api-reference/core/deckgl"]
       },
       {
         "type": "category",
@@ -206,10 +199,7 @@
       {
         "type": "category",
         "label": "Effects",
-        "items": [
-          "api-reference/core/lighting-effect",
-          "api-reference/core/post-process-effect"
-        ]
+        "items": ["api-reference/core/lighting-effect", "api-reference/core/post-process-effect"]
       },
       {
         "type": "category",
@@ -292,10 +282,7 @@
       {
         "type": "category",
         "label": "@deck.gl/mapbox",
-        "items": [
-          "api-reference/mapbox/overview",
-          "api-reference/mapbox/mapbox-overlay"
-        ]
+        "items": ["api-reference/mapbox/overview", "api-reference/mapbox/mapbox-overlay"]
       },
       {
         "type": "category",

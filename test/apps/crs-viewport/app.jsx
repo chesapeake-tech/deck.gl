@@ -13,11 +13,13 @@ import {
   MVTLayer,
   TerrainLayer,
   TileLayer,
-  _WarpedTileLayer as WarpedTileLayer
+  _WarpedTileLayer as WarpedTileLayer,
+  _MapLibreStyleLayer as MapLibreStyleLayer
 } from '@deck.gl/geo-layers';
 import {SimpleMeshLayer} from '@deck.gl/mesh-layers';
 import {SphereGeometry} from '@luma.gl/engine';
 import proj4 from 'proj4';
+import {createPropertyExpression, featureFilter} from '@maplibre/maplibre-gl-style-spec';
 
 const utm18n = proj4('EPSG:4326', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs');
 
@@ -274,6 +276,115 @@ function makeUtmMercatorMvtLayers() {
   ];
 }
 
+// Task 13 (Stage 2, E1 plan) verification: the Fathom hybrid acceptance scenario, restated for
+// the MapLibre style adapter - the same synthetic Mercator-pyramid MVT source the "MVTLayer
+// (Mercator-pyramid, auto)" demo above uses (no public UTM-area MVT test service exists, same
+// constraint), but styled declaratively through _MapLibreStyleLayer + the real
+// @maplibre/maplibre-gl-style-spec evaluator instead of hand-written GeoJsonLayer accessors.
+// `source.fetch` passes through to the adapter's inner MVTLayer verbatim (Task 13 addendum to
+// MapLibreVectorSource - an index signature was added so any MVTLayer/TileLayer prop can be
+// forwarded, not just data/tileMatrixSet). Works unchanged in a classic Mercator MapView too
+// (no tileMatrixSet, no CRS-specific code involved) - the "Mercator regression" half of Task 13.
+const DEMO_MAPLIBRE_STYLE = {
+  layers: [
+    {
+      id: 'bg',
+      type: 'background',
+      paint: {'background-color': '#eef2f5', 'background-opacity': 0.08}
+    },
+    {
+      id: 'reference-areas',
+      type: 'fill',
+      filter: ['==', ['get', 'class'], 'reference-area'],
+      paint: {
+        'fill-color': '#ff6a00',
+        'fill-opacity': 0.35,
+        'fill-outline-color': '#a83e00'
+      }
+    },
+    {
+      id: 'reference-labels',
+      type: 'symbol',
+      filter: ['has', 'name'],
+      layout: {'text-field': ['get', 'name']}
+    }
+  ]
+};
+
+// Deviation: unlike `makeUtmMercatorMvtLayers` above, this generator returns features already
+// in lnglat coordinates (computed from the tile's own bbox, via `osmTile2lngLatDemo`) rather
+// than tile-LOCAL [0,1] coordinates. `renderSubLayers` (both MVTLayer's own and this adapter's)
+// passes `tile.content` straight through unchanged - the tile-local-to-lnglat reprojection
+// (`transformTileCoordsToWGS84`) is only actually applied to content parsed by the real
+// MVTWorkerLoader during `load()` (its `coordinates: 'wgs84'` loader option runs at *parse*
+// time); a custom `fetch` override that hands back already-parsed features (as every synthetic
+// demo in this file does) bypasses that parse step entirely, so tile-local content would render
+// at its literal [0,1] value interpreted as lnglat degrees - nowhere near the tile's real
+// location. Pre-computing lnglat directly here sidesteps that question rather than depending on
+// it (found via this task's own Playwright verification: the tile-local version rendered
+// nothing at the expected location).
+function makeSyntheticMercatorMvtFeaturesLngLat(z, x, y) {
+  const [west, north] = osmTile2lngLatDemo(x, y, z);
+  const [east, south] = osmTile2lngLatDemo(x + 1, y + 1, z);
+  const inset = 0.15;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const ring = [
+    [lerp(west, east, inset), lerp(south, north, inset)],
+    [lerp(west, east, 1 - inset), lerp(south, north, inset)],
+    [lerp(west, east, 1 - inset), lerp(south, north, 1 - inset)],
+    [lerp(west, east, inset), lerp(south, north, 1 - inset)],
+    [lerp(west, east, inset), lerp(south, north, inset)]
+  ];
+  return [
+    {
+      type: 'Feature',
+      properties: {class: 'reference-area', tile: `${z}/${x}/${y}`},
+      geometry: {type: 'Polygon', coordinates: [ring]}
+    },
+    {
+      type: 'Feature',
+      properties: {name: `${z}/${x}/${y}`},
+      geometry: {type: 'Point', coordinates: [(west + east) / 2, (south + north) / 2]}
+    }
+  ];
+}
+
+function makeMapLibreStyleLayers() {
+  return [
+    new MapLibreStyleLayer({
+      id: 'maplibre-style-demo',
+      style: DEMO_MAPLIBRE_STYLE,
+      source: {
+        // Placeholder template: never fetched over the network, see `fetch` override below.
+        // Deliberately NO tileMatrixSet - exercises the same MercatorCRSTileset2D auto-route
+        // (in a CRS MapView) / default Tileset2D (in a classic Mercator MapView) the
+        // "MVTLayer (Mercator-pyramid, auto)" demo already proves; this demo proves the style
+        // adapter renders the identical content correctly in both.
+        data: 'synthetic-mercator-style://{z}/{x}/{y}',
+        // `loadOptions.mvt.coordinates` (set by MVTLayer.getTileData, `mvt-layer.ts`) tells us
+        // which route is active: 'wgs84' for the CRS/Globe feature route (MVTLayer skips its
+        // CARTESIAN modelMatrix transform entirely - content must already be lnglat), 'local'
+        // for classic Mercator (MVTLayer applies its own power-of-two modelMatrix to whatever
+        // tile.content is - content must be tile-LOCAL [0,1] fractional coordinates, matching
+        // real MVTWorkerLoader('local') output). A single generator can't serve both, since the
+        // custom fetch bypasses the real loader's own coordinate transform entirely (found via
+        // this task's Mercator-regression Playwright screenshot: lnglat content rendered at the
+        // wrong place once the Mercator modelMatrix was applied on top of it).
+        fetch: (url, {propName, loadOptions}) => {
+          if (propName !== 'data') return Promise.resolve(null);
+          const [, z, x, y] = /synthetic-mercator-style:\/\/(\d+)\/(\d+)\/(\d+)/.exec(url);
+          const features =
+            loadOptions?.mvt?.coordinates === 'wgs84'
+              ? makeSyntheticMercatorMvtFeaturesLngLat(Number(z), Number(x), Number(y))
+              : makeSyntheticMercatorMvtFeatures(Number(z), Number(x), Number(y));
+          return Promise.resolve(features);
+        }
+      },
+      evaluator: {createPropertyExpression, featureFilter}
+    })
+  ];
+}
+
 // Task 3 (Phase 4 plan) verification: a CARTESIAN-positioned mesh, positioned app-side via the
 // CRS's own forward transform (+ Phase 1's common-space normalization, `lngLatToCommon` —
 // equivalently `viewport.projectFlat`). No new deck.gl code is involved; this proves the
@@ -337,6 +448,7 @@ function App() {
   const [showTiles, setShowTiles] = useState(true);
   const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain' | 'mvt' | 'mvt-mercator'
   const [showPitchMesh, setShowPitchMesh] = useState(false);
+  const [showMapLibreStyle, setShowMapLibreStyle] = useState(false);
 
   const tileLayers = [];
   if (showTiles) {
@@ -459,6 +571,7 @@ function App() {
   const layers = [
     ...tileLayers,
     ...(crsName === 'UTM 18N' && showPitchMesh ? [makePitchMeshLayer()] : []),
+    ...(showMapLibreStyle ? makeMapLibreStyleLayers() : []),
     new GeoJsonLayer({
       id: 'states',
       data: 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json',
@@ -524,6 +637,15 @@ function App() {
             pitch mesh (CARTESIAN)
           </label>
         )}
+        <label style={{marginLeft: 8}}>
+          <input
+            type="checkbox"
+            checked={showMapLibreStyle}
+            onChange={e => setShowMapLibreStyle(e.target.checked)}
+          />
+          MapLibreStyleLayer demo (Fathom hybrid: pair with Esri imagery (warped) in UTM 18N; also
+          works unchanged in Web Mercator)
+        </label>
       </div>
       <DeckGL
         views={new MapView({crs: CRS_OPTIONS[crsName]})}
