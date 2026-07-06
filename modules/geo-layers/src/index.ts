@@ -56,3 +56,5 @@ export type {MercatorCRSTileset2DProps as _MercatorCRSTileset2DProps} from './wa
 
 export {MapLibreStyleLayer as _MapLibreStyleLayer} from './maplibre-style-layer/maplibre-style-layer';
 export type {MapLibreStyleLayerProps as _MapLibreStyleLayerProps} from './maplibre-style-layer/types';
+export {fetchSpriteAtlas as _fetchMapLibreSpriteAtlas} from './maplibre-style-layer/sprite-fetch';
+export type {FetchSpriteAtlasOptions as _FetchMapLibreSpriteAtlasOptions} from './maplibre-style-layer/sprite-fetch';
