@@ -13,7 +13,9 @@ import {
   mapBackgroundLayer,
   mapFillLayer,
   mapLineLayer,
-  mapFillExtrusionLayer
+  mapFillExtrusionLayer,
+  isStyleLayerVisible,
+  isStyleLayerInZoomRange
 } from './style-layer-mappers';
 import type {StyleLayer} from './style-layer-mappers';
 import {mapSymbolIconLayer, mapSymbolTextLayer} from './symbol-mappers';
@@ -120,6 +122,49 @@ function mapOneStyleLayer(
   }
 }
 
+/** Perf fix (bucket-crossing regen storm): per (tile id, style layer id) memoization entry for
+ * the `renderSubLayers` closure below. `mapped` is the RAW `mapOneStyleLayer` output (before
+ * `applyTilePositioning`/the per-tile id-namespacing `.clone()`, both cheap/idempotent and still
+ * re-applied on every call regardless of whether `mapped` itself was rebuilt). See the
+ * `updateTriggers.renderSubLayers` doc comment below for why this cache exists at all. */
+interface SubLayerCacheEntry {
+  /** The `tileProps.data` reference this entry was built from — a changed reference means the
+   * tile's actual content changed (a new tile load / `tileset.reloadAll()`), not just a
+   * zoom-bucket-crossing regen, and always forces a rebuild regardless of zoom-dependence. */
+  data: unknown;
+  mapped: Layer | null;
+  /** Whether this style layer's own compiled paint/layout expressions reference `["zoom"]` —
+   * i.e. whether skipping a rebuild across a zoom-bucket crossing could ever be wrong for this
+   * layer. Derived from the built layer's own `updateTriggers` (every mapper function already
+   * sets `zoomBucket(zoom)` vs. `undefined` per accessor via `zoomDependentBucket`/inline —
+   * see style-layer-mappers.ts/symbol-mappers.ts). Conservatively `true` (never skip) when
+   * `mapped` is `null` (this build produced zero matching features) — a style layer can go from
+   * zero matches to some matches purely because its `filter` itself references `["zoom"]` (not
+   * tracked by `updateTriggers`, and rare enough not to warrant its own compiled-expression
+   * plumbing here), so there is nothing safe to compare against on the next crossing. */
+  isZoomDependent: boolean;
+  /** `isStyleLayerVisible(styleLayer) && isStyleLayerInZoomRange(styleLayer, zoom)` at build
+   * time — rechecked (cheaply, O(1)) on every call so a minzoom/maxzoom range crossing always
+   * forces a rebuild even for an otherwise fully static (non-zoom-dependent-paint) style layer. */
+  inZoomRange: boolean;
+}
+
+/** True if any of `layer`'s own `updateTriggers` entries is a real (non-`undefined`) value —
+ * every style-layer mapper (style-layer-mappers.ts, symbol-mappers.ts) sets exactly one of
+ * `zoomBucket(zoom)`/`undefined` per accessor depending on whether that accessor's compiled
+ * expression is zoom-dependent (`CompiledExpression.isZoomDependent`, compile-expression.ts) —
+ * so "some updateTriggers entry is defined" is equivalent to "this style layer has at least one
+ * zoom-dependent paint/layout expression" without needing to re-derive that from the compile
+ * cache directly. */
+function layerHasZoomDependentAccessor(layer: Layer): boolean {
+  const triggers = layer.props.updateTriggers as Record<string, unknown> | undefined;
+  if (!triggers) return false;
+  for (const key in triggers) {
+    if (triggers[key] !== undefined) return true;
+  }
+  return false;
+}
+
 function toFeatureArray(tileData: unknown): Feature[] {
   if (Array.isArray(tileData)) return tileData as Feature[];
   // Defensive-only in practice: the inner MVTLayer is always constructed with `binary: false`
@@ -179,6 +224,9 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     if (!this.state.compileCache) this.state.compileCache = new Map();
     if (!this.state.warnedUnsupportedIds) this.state.warnedUnsupportedIds = new Set<string>();
     if (!this.state.warnedLinePlacementIds) this.state.warnedLinePlacementIds = new Set<string>();
+    // Perf fix (bucket-crossing regen storm): per-(tile id, style layer id) memoized sublayer
+    // cache — see `SubLayerCacheEntry`'s doc comment and the `renderSubLayers` closure below.
+    if (!this.state.subLayerCache) this.state.subLayerCache = new Map();
   }
 
   private _getCompileCache(): CompileCache {
@@ -186,10 +234,21 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     const {style, evaluator} = this.props;
     if (this.state.cacheStyle !== style || this.state.cacheEvaluator !== evaluator) {
       this.state.compileCache = new Map();
+      // A stale memoized sublayer built against the since-replaced style/evaluator is exactly
+      // as wrong as a stale compiled expression would be (Review fix I6's reasoning applies
+      // identically here) — invalidate together, on the same identity check.
+      this.state.subLayerCache = new Map();
       this.state.cacheStyle = style;
       this.state.cacheEvaluator = evaluator;
     }
     return this.state.compileCache as CompileCache;
+  }
+
+  private _getSubLayerCache(): Map<string, Map<string, SubLayerCacheEntry>> {
+    // `_getCompileCache` performs the identity check (and resets both caches together); call it
+    // first so `subLayerCache` reflects the current style+evaluator identity.
+    this._getCompileCache();
+    return this.state.subLayerCache as Map<string, Map<string, SubLayerCacheEntry>>;
   }
 
   renderLayers(): LayersList {
@@ -219,6 +278,10 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     // `renderSubLayers` callback's closure, so a style layer's filter/paint expressions are
     // parsed a single time no matter how many tiles or zoom-bucket re-renders follow.
     const compileCache = this._getCompileCache();
+    // Perf fix (bucket-crossing regen storm): shared across every tile's `renderSubLayers` call
+    // below (and across every zoom-bucket-crossing re-render), same identity-based invalidation
+    // as `compileCache` (see `_getSubLayerCache`).
+    const subLayerCache = this._getSubLayerCache();
     this._ensureState();
     const warnedUnsupportedIds = this.state.warnedUnsupportedIds as Set<string>;
     const warnedLinePlacementIds = this.state.warnedLinePlacementIds as Set<string>;
@@ -269,10 +332,12 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     const {
       id: _sourceId,
       updateTriggers: sourceUpdateTriggers,
+      onTileUnload: sourceOnTileUnload,
       ...restSource
     } = source as {
       id?: string;
       updateTriggers?: Record<string, unknown>;
+      onTileUnload?: (tile: {id: string}) => void;
       [key: string]: unknown;
     };
 
@@ -320,23 +385,68 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           ...(sourceUpdateTriggers ?? {}),
           renderSubLayers: [zoomBucket(zoom), style]
         },
+        // Perf fix (bucket-crossing regen storm): evicts this tile's memoized sublayer cache
+        // entries once the tile itself is dropped (cache size, eviction, `maxCacheSize`/
+        // `maxCacheByteSize`) — without this, `subLayerCache` would grow unbounded across a long
+        // pan/zoom session (an entry per style layer for every tile ID ever visited, never
+        // reclaimed).
+        onTileUnload: (tile: {id: string}) => {
+          subLayerCache.delete(tile.id);
+          sourceOnTileUnload?.(tile);
+        },
         renderSubLayers: (tileProps: TileRenderProps) => {
           const features = toFeatureArray(tileProps.data);
           const sublayers: LayersList = [];
+          let tileCache = subLayerCache.get(tileProps.id);
+          if (!tileCache) {
+            tileCache = new Map();
+            subLayerCache.set(tileProps.id, tileCache);
+          }
           for (const styleLayer of featureStyleLayers) {
             if (!SUPPORTED_TYPES.has(styleLayer.type)) {
               warnUnsupportedOnce(styleLayer, warnedUnsupportedIds);
               continue;
             }
-            const mapped = mapOneStyleLayer(
-              styleLayer,
-              features,
-              evaluator,
-              zoom,
-              spriteAtlas,
-              id => warnLinePlacementOnce(id, warnedLinePlacementIds),
-              compileCache
-            );
+            const prevEntry = tileCache.get(styleLayer.id);
+            const inZoomRangeNow =
+              isStyleLayerVisible(styleLayer) && isStyleLayerInZoomRange(styleLayer, zoom);
+            // Perf fix (bucket-crossing regen storm): `updateTriggers.renderSubLayers` above is
+            // keyed on the zoom BUCKET (see its doc comment) — any integer-zoom crossing nulls
+            // out every cached tile's sublayers (`tile-layer.ts`'s `tile.layers = null` branch),
+            // forcing this callback to re-run for EVERY tile, even though the overwhelming
+            // majority of a real style's layers have no `["zoom"]`-dependent paint/layout and no
+            // minzoom/maxzoom gate anywhere near the crossing — their `mapOneStyleLayer` output
+            // (filter pass + compiled-expression evaluation + a fresh GeoJsonLayer/IconLayer/
+            // TextLayer instance) would be byte-for-byte identical to what was already built.
+            // Reuse the previous build for exactly those layers; only style layers that are
+            // actually zoom-dependent (or whose minzoom/maxzoom range just flipped) re-run the
+            // full per-feature work.
+            const canReuse =
+              prevEntry !== undefined &&
+              prevEntry.data === tileProps.data &&
+              prevEntry.inZoomRange === inZoomRangeNow &&
+              prevEntry.mapped !== null &&
+              !prevEntry.isZoomDependent;
+            let mapped: Layer | null;
+            if (canReuse) {
+              mapped = prevEntry.mapped;
+            } else {
+              mapped = mapOneStyleLayer(
+                styleLayer,
+                features,
+                evaluator,
+                zoom,
+                spriteAtlas,
+                id => warnLinePlacementOnce(id, warnedLinePlacementIds),
+                compileCache
+              );
+              tileCache.set(styleLayer.id, {
+                data: tileProps.data,
+                mapped,
+                isZoomDependent: mapped ? layerHasZoomDependentAccessor(mapped) : true,
+                inZoomRange: inZoomRangeNow
+              });
+            }
             if (mapped) {
               const positioned = applyTilePositioning(mapped, tileProps);
               // TileLayer's default renderSubLayers relies on `props.id` (tile-unique, set by
