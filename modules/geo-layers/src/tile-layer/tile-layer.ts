@@ -207,10 +207,6 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
     tileset: Tileset2D | null;
     isLoaded: boolean;
     frameNumber?: number;
-    /** The `viewport.projectionMode` the current `tileset` was created under — compared in
-     * `updateState` alongside `tileMatrixSet` identity to decide whether to recreate the
-     * tileset (some subclasses' `_getTilesetClass()`, e.g. `MVTLayer`, depend on it). */
-    tilesetProjectionMode?: number;
   };
 
   initializeState() {
@@ -252,24 +248,31 @@ export default class TileLayer<DataT = any, ExtraPropsT extends {} = {}> extends
     // Reviewer-triaged fast-follow: `_getTilesetClass()` (overridden by some subclasses, e.g.
     // `MVTLayer`, to auto-route between `Tileset2D`/`CRSTileset2D`/`MercatorCRSTileset2D` based
     // on `this.context.viewport.projectionMode`) can depend on the viewport's projection mode,
-    // not just `tileMatrixSet` identity. Without also invalidating on a projectionMode change, a
+    // not just `tileMatrixSet` identity. Without also invalidating when that answer changes, a
     // live CRS<->Mercator view swap on the same layer instance kept the stale tileset (built for
     // the old projection, e.g. a `MercatorCRSTileset2D` under a now-classic-Mercator viewport)
     // instead of recreating it via the now-correct `_getTilesetClass()` answer.
-    const projectionMode = this.context.viewport?.projectionMode;
+    //
+    // Compare the *resolved tileset class*, not the raw `projectionMode` value: for a plain
+    // `WebMercatorViewport`, `Viewport.projectionMode` is itself zoom-dependent (WEB_MERCATOR
+    // below zoom 12, WEB_MERCATOR_AUTO_OFFSET at/above — see viewport.ts), so keying invalidation
+    // on that value directly would needlessly finalize + recreate the tileset (dropping all
+    // cached tiles and refetching) every time a classic Mercator app's zoom crosses 12, even
+    // though `_getTilesetClass()` resolves to the same class either way. `_getTilesetClass()` is
+    // cheap and side-effect-free (a prop/viewport read), so it is safe to call here just to check.
     // Deep comparison (matching the prop's `compare` semantics) so a spread-but-equal
     // tileMatrixSet object does not needlessly discard the tile cache
     if (
       tileset &&
       (!deepEqual(props.tileMatrixSet, oldProps.tileMatrixSet, -1) ||
-        projectionMode !== this.state.tilesetProjectionMode)
+        tileset.constructor !== this._getTilesetClass())
     ) {
       tileset.finalize();
       tileset = null;
     }
     if (!tileset) {
       tileset = new (this._getTilesetClass())(this._getTilesetOptions());
-      this.setState({tileset, tilesetProjectionMode: projectionMode});
+      this.setState({tileset});
     } else if (propsChanged) {
       tileset.setOptions(this._getTilesetOptions());
 
