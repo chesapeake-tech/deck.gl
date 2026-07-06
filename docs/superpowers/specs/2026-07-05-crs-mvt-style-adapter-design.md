@@ -163,6 +163,16 @@ style, rendered correctly co-registered in a UTM `MapView`.
    generic through `TileLayer`, Phase 2) + the `wgs84` coordinate-decode route (already exists,
    currently gated to `GlobeView` only) + the existing `PROJECTION_MODE.CRS` LNGLAT common-space
    path (Phase 1, Jacobian + Hessian; zero new shader code).
+1b. **`MVTLayer` *without* `tileMatrixSet` — the universal case — also renders correctly in a CRS
+   `MapView`.** This is the shape nearly every real MVT source actually has (Esri's "Ocean
+   Reference" service and most other public vector-tile endpoints are classic Mercator XYZ
+   pyramids, not CRS-native `tileMatrixSet`-described sources). `MVTLayer._getTilesetClass()`
+   (new override) selects `MercatorCRSTileset2D` — the same class `_WarpedTileLayer` (Phase 3)
+   already uses to reproject a CRS view's bounds into Mercator source space for raster
+   warping — whenever the viewport is a CRS view and no `tileMatrixSet`/custom `TilesetClass`
+   is set. Its `getTileMetadata()` lnglat `bbox` feeds the same `wgs84`-decode route item 1 uses,
+   with no glue code (see Design). This closes what Stage 1 originally shipped as a warn-once,
+   unspecified-behavior gap (review Finding 2) — see Design for the full account.
 2. Picking, `autoHighlight`, and `highlightedFeatureId` behave correctly in CRS views — proven
    by regression tests, not new code (see Design: these paths are already coordinate-agnostic
    or already exercised by the pre-existing Globe+wgs84 combination).
@@ -171,13 +181,17 @@ style, rendered correctly co-registered in a UTM `MapView`.
 4. **Zero behavior change** for every existing MVTLayer usage: classic Mercator (`binary: true`
    default) and existing `GlobeView` (`wgs84`, `binary: false`) paths are byte-identical after
    this change — both are regression-tested.
-5. **Acceptance scenario (Fathom hybrid case):** in one UTM `MapView`, a warped Esri Ocean
-   basemap (`_WarpedTileLayer`, Phase 3, unchanged) renders underneath an `MVTLayer`
-   (`tileMatrixSet` set, point-geometry reference labels) rendered via `GeoJsonLayer`'s
+5. **Acceptance scenario (Fathom hybrid case, corrected — the real, Esri-shaped motivating
+   case):** in one UTM `MapView`, a warped Esri Ocean basemap (`_WarpedTileLayer`, Phase 3,
+   unchanged) renders underneath an `MVTLayer` **without `tileMatrixSet`** — a classic Mercator
+   XYZ vector-tile service (Esri's "Ocean Reference" point-label layer is exactly this shape;
+   Esri does not publish a CRS-native/`tileMatrixSet`-described vector service) — automatically
+   routed through `MercatorCRSTileset2D` (item 1b) and rendered via `GeoJsonLayer`'s
    point/`TextLayer` sublayer path — both correctly co-registered at multiple zooms and after
    pan/zoom, with the vector point labels landing on their correct UTM-projected positions
    (verified against an independently computed `crs.transform.forward` expectation, the same
-   technique Phase 3/4's tests already use).
+   technique Phase 3/4's tests already use). A `tileMatrixSet`-described CRS-native source
+   remains supported (item 1) but is the less common case in practice — both are tested.
 
 ### Stage 2 — MapLibre style-spec adapter (independently shippable; depends on Stage 1 only insofar as it is commonly used together, not in code)
 
@@ -201,11 +215,13 @@ style, rendered correctly co-registered in a UTM `MapView`.
      `heatmap` style layers (skipped with a `console.warn` per encountered layer type), glyph
      PBF font parity (browser-font approximation only, no SDF glyph-atlas fetch/parity with
      the style's declared `glyphs` URL).
-3. **Acceptance scenario:** the same Fathom hybrid case as Stage 1, but the vector reference
-   layer's styling (colors, line dash for boundaries, point-label text/placement/priority) comes
-   from feeding Esri's actual MapLibre-compatible style JSON through the adapter, rather than
-   hand-written deck.gl accessors — i.e., Stage 2's acceptance is Stage 1's acceptance scenario
-   with the styling authored declaratively instead of by hand.
+3. **Acceptance scenario:** the same Fathom hybrid case as Stage 1 (item 5, corrected — the
+   `MercatorCRSTileset2D`-auto-routed, no-`tileMatrixSet` vector source, matching Esri's actual
+   published service shape), but the vector reference layer's styling (colors, line dash for
+   boundaries, point-label text/placement/priority) comes from feeding Esri's actual
+   MapLibre-compatible style JSON through the adapter, rather than hand-written deck.gl
+   accessors — i.e., Stage 2's acceptance is Stage 1's acceptance scenario with the styling
+   authored declaratively instead of by hand.
 4. **Zero new runtime dependency** in any published `@deck.gl/*` package (Decisions for review
    #2) — `@maplibre/maplibre-gl-style-spec` is a root devDependency only, imported by tests and
    by consuming applications, never by `@deck.gl/geo-layers`'s own `dependencies`.
@@ -215,16 +231,26 @@ style, rendered correctly co-registered in a UTM `MapView`.
 - **Stage 1: `binary: true` (typed-array fast path) in CRS views.** Explicitly unsupported in
   v1, not a TODO — `binary` is forced `false` whenever the wgs84/CRS route is taken (mirroring
   the existing Globe behavior verbatim). See Decisions for review #5.
-- **Stage 1: the roadmap's literal wording, corrected.** `docs/superpowers/specs/2026-07-05-crs-roadmap.md:51`
-  names `MercatorCRSTileset2D` as the tile-selection class for E1. Investigation shows this is
-  imprecise: `MercatorCRSTileset2D` (`modules/geo-layers/src/warped-tile-layer/mercator-crs-tileset-2d.ts:36`)
-  selects standard Web-Mercator XYZ *raster* tiles for `_WarpedTileLayer`'s mesh-warping —
-  it is the Phase 3 raster-warp mechanism, unrelated to vector content. The class this item
-  actually needs is `_CRSTileset2D` (`modules/geo-layers/src/tileset-2d/crs-tileset-2d.ts`),
-  already reachable from any `TileLayer` subclass (including `MVTLayer`) via the existing
-  `tileMatrixSet` prop and `TileLayer._getTilesetClass()` (`tile-layer.ts:275-281`) — the same
-  mechanism Phase 4's `TerrainLayer` fix used. No new tileset-selection code is needed for
-  Stage 1 at all (see Design). This spec supersedes the roadmap line's wording.
+- **Stage 1: the roadmap's literal wording — corrected twice; both classes are needed, for two
+  different source shapes.** `docs/superpowers/specs/2026-07-05-crs-roadmap.md:51` names
+  `MercatorCRSTileset2D` as the tile-selection class for E1. An earlier revision of this spec
+  (and this branch's first Stage 1 implementation) judged that imprecise and out of scope,
+  reasoning that `MercatorCRSTileset2D` (`modules/geo-layers/src/warped-tile-layer/mercator-crs-tileset-2d.ts:36`)
+  is Phase 3's raster-only warp mechanism, unrelated to vector content, and that `_CRSTileset2D`
+  (`modules/geo-layers/src/tileset-2d/crs-tileset-2d.ts`, already reachable via `tileMatrixSet` +
+  `TileLayer._getTilesetClass()`, `tile-layer.ts:275-281`) was the only class this item needs.
+  Review caught the gap: `_CRSTileset2D` only covers CRS-native (`tileMatrixSet`-described)
+  vector sources — but the *universal* real-world case (Esri's "Ocean Reference" service and
+  most public MVT endpoints) is a classic Mercator XYZ pyramid with no `tileMatrixSet` at all,
+  and that case had no CRS-view route (Stage 1's original warn-once was unspecified,
+  not-actually-working behavior for exactly this case). **Both classes are needed, selected by
+  `MVTLayer._getTilesetClass()`'s new override based on whether `tileMatrixSet` is set** (see
+  Goals #1/#1b, Design): `_CRSTileset2D` for CRS-native sources, `MercatorCRSTileset2D` for
+  classic Mercator-pyramid sources viewed through a CRS `MapView`. The roadmap line's wording
+  (`MercatorCRSTileset2D` for E1) turns out to have been correct for the case that matters most
+  in practice, if incomplete (it did not mention `_CRSTileset2D` for the CRS-native case, which
+  remains supported too) — this spec supersedes the roadmap line's wording with the complete,
+  two-class picture.
 - **Stage 1: non-integer/adaptive tile LOD, far-field pitched-view over-fetch.** Pre-existing,
   documented `_CRSTileset2D`/`MercatorCRSTileset2D` limitation (Chunk B1); unaffected either way
   by this item.
@@ -275,8 +301,8 @@ Concretely:
    already coordinate-system-generic (the lerp-to-lnglat transform, the lnglat `GeoJsonLayer`
    default, the feature-ID picking) precisely because Globe was the branch's first non-Mercator
    consumer.
-2. **Tile selection needs no new code.** `MVTLayer extends TileLayer`
-   (`mvt-layer.ts:112` region) and inherits `TileLayerProps.tileMatrixSet`
+2. **Tile selection: CRS-native (`tileMatrixSet` set) needs no new code.** `MVTLayer extends
+   TileLayer` (`mvt-layer.ts:112` region) and inherits `TileLayerProps.tileMatrixSet`
    (`tile-layer.ts:78`); `TileLayer._getTilesetClass()` (`tile-layer.ts:275-281`) already
    switches to `_CRSTileset2D` whenever `tileMatrixSet` is set, regardless of layer subclass —
    this is the exact mechanism Phase 4's `TerrainLayer` fix reused, and `MVTLayer` gets it for
@@ -285,14 +311,43 @@ Concretely:
    `GeoBoundingBox` shape `transformTileCoordsToWGS84` already expects
    (`mvt-layer.ts:471-492` region) — no glue code between tile metadata and the coordinate
    transform.
-3. **A CRS view without `tileMatrixSet` is explicitly unsupported, not silently wrong.** Today's
-   implicit tile scheme when `tileMatrixSet` is absent (`worldScale = 2^z`, `WORLD_SIZE = 512`
-   power-of-two Mercator quadtree) is meaningless for arbitrary CRS content. When
-   `projectionMode === PROJECTION_MODE.CRS` and `tileMatrixSet` is not set, `MVTLayer` logs a
-   `log.warn` once (mirroring existing `log.warn` usage in the file, e.g. `mvt-layer.ts:278`)
-   pointing at the docs; behavior is otherwise unspecified (most likely: tiles requested at
-   nonsensical z/x/y for the source, empty/wrong content) — this is a documented limitation,
-   not a crash-prevention guarantee.
+3. **Tile selection: the universal, no-`tileMatrixSet` case — `MVTLayer` overrides
+   `_getTilesetClass()`.** (Review Finding 2; corrects Stage 1 as originally shipped.) Most real
+   MVT sources — Esri's "Ocean Reference" vector service, most public MVT endpoints — are
+   classic Mercator XYZ pyramids, described by no `tileMatrixSet` at all. Before this fix, that
+   left a genuine design hole: `TileLayer`'s default `_getTilesetClass()` falls through to the
+   base `Tileset2D`, whose implicit tile scheme (`worldScale = 2^z`, `WORLD_SIZE = 512`
+   power-of-two Mercator quadtree, `../tileset-2d/utils.ts`) treats the CRS viewport's zoom/
+   bounds as if they were Mercator — meaningless for a UTM (or any non-Mercator) view. Stage 1
+   as originally shipped only detected this (a `log.warn` once) rather than fixing it; the
+   fix routes it through `MercatorCRSTileset2D` (`modules/geo-layers/src/warped-tile-layer/mercator-crs-tileset-2d.ts:36`)
+   automatically — the same class `_WarpedTileLayer` (Phase 3) already uses to reproject a CRS
+   view's bounds into Mercator source space for raster tile warping. `MVTLayer._getTilesetClass()`
+   (new override, `mvt-layer.ts`) selects it when: the viewport is a CRS view
+   (`projectionMode === PROJECTION_MODE.CRS`), `tileMatrixSet` is unset, and `TilesetClass` has
+   not been explicitly overridden by the caller (that override always wins, matching
+   `TileLayer`'s own policy). `MercatorCRSTileset2D`'s `getTileMetadata()` also returns a lnglat
+   `bbox` (`{west, south, east, north}`) — the exact same shape `_CRSTileset2D` returns and the
+   wgs84 decode route (item 1/step 1 above) already consumes, so no additional glue code is
+   needed between the two tileset classes and the rest of `MVTLayer`. Its
+   `sourceTileMatrixSet`/`sourceCrs` options (`_WarpedTileLayer`-specific, used to warp a
+   *non*-Mercator raster source) are left unset by `MVTLayer`, which is safe: `resolveWarpSource`
+   (`warp-mesh.ts`) defaults to the built-in Web-Mercator source when both are omitted — exactly
+   the plain Mercator-pyramid vector case this item targets, no raster/warp-specific option
+   required outside `_WarpedTileLayer`.
+   **Why this lives in `MVTLayer`, not `TileLayer` generically:** only a layer whose sublayer
+   rendering consumes `getTileMetadata()`'s lnglat `bbox` (as `MVTLayer`'s wgs84/feature route
+   already does, via `transformTileCoordsToWGS84`) can render tiles indexed this way correctly.
+   A plain `TileLayer` (or any subclass that hasn't opted into that decode route) still positions
+   tiles with the Mercator-quadtree power-of-two `modelMatrix` (`mvt-layer.ts`'s own
+   `renderSubLayers`, Mercator branch) — which does not match `MercatorCRSTileset2D`'s tile
+   rects. `_WarpedTileLayer` already handles that exact mismatch itself, via its own
+   mesh-warping `renderSubLayers` — a generic `TileLayer`-level promotion would bypass that and
+   silently mis-render any other `TileLayer` subclass that doesn't do the same. The promotion is
+   therefore layer-specific (an `_getTilesetClass()` override), not a `TileLayer`-wide change.
+   The previously-shipped warn-once (Stage 1 Task 3) is now obsolete for this combination — it
+   is removed, since the combination it flagged is now a supported, tested route, not an
+   unspecified one.
 4. **`getHighlightedObjectIndex`** (`mvt-layer.ts:344` region) reads `tile.content` and branches
    internally on `this.state.binary`; since `binary` is already forced `false` for the wgs84
    route (step 1), this method's non-binary branch is exactly the one `GlobeView` already
@@ -327,7 +382,9 @@ interface MapLibreStyleEvaluator {
 interface MapLibreStyleLayerProps {
   style: StyleSpecification;        // the MapLibre style JSON (or the relevant `layers`+`sources` subset)
   data: string;                      // {z}/{x}/{y} tile URL template for the vector source (mirrors MVTLayer's `data`)
-  tileMatrixSet?: TileMatrixSet;     // CRS-native tiling (Stage 1); omit for classic Mercator XYZ
+  tileMatrixSet?: TileMatrixSet;     // CRS-native tiling (Stage 1, item 1); omit for the classic
+                                     // Mercator XYZ case (Stage 1, item 1b — MercatorCRSTileset2D
+                                     // auto-route, the more common real-world source shape)
   evaluator: MapLibreStyleEvaluator; // injected — see Decisions for review #2
   spriteAtlas?: {image: string; mapping: string}; // resolved sprite PNG + JSON, app-fetched
 }
@@ -398,7 +455,17 @@ expressions get no zoom entry (never re-evaluated on pan/zoom, only on data chan
   `tileMatrixSet` + a UTM `_CRSViewport` selects `_CRSTileset2D`, forces `binary: false`, omits
   `ClipExtension`, and produces `GeoJsonLayer` sublayer features at lnglat coordinates matching
   an independently computed expectation; full regression run of the existing Mercator- and
-  Globe-mode MVTLayer spec/render-test suites (byte-identical, no assertion changes).
+  Globe-mode MVTLayer spec/render-test suites (byte-identical, no assertion changes). **Added
+  after review (Finding 2):** the universal, no-`tileMatrixSet` case — a `.spec.ts` proving
+  `MVTLayer._getTilesetClass()` selects `MercatorCRSTileset2D` (not `_CRSTileset2D`, not the
+  default `Tileset2D`) for a Mercator-pyramid MVT source in a UTM `_CRSViewport`, with a
+  known-answer selected tile level (`selectMercatorSourceZoom`, mirroring
+  `mercator-crs-tileset-2d.node.spec.ts`'s own known-answer technique) and known-answer tile
+  bbox (closed-form `osmTile2lngLat` corner math); a feature-decode test confirming a tile-local
+  point lands at the exact lnglat position `transform()` (the existing wgs84-decode helper)
+  produces from that real, `MercatorCRSTileset2D`-computed bbox — not a fabricated one; a
+  regression pin that a plain Mercator (non-CRS) view still selects the default `Tileset2D`
+  (byte-identical, binary fast path unaffected).
 - **Stage 2**: `.node.spec.ts` per style-layer-type mapping (filter compiled+evaluated correctly,
   paint expression compiled+evaluated correctly at 2+ zoom buckets, sprite-mapping key-shape
   transform correct, dasharray/collision-priority wiring correct) using a small

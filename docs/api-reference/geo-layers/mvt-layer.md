@@ -206,14 +206,27 @@ function App() {
 ## CRS views
 
 Vector tile content renders correctly inside a non-Mercator CRS
-[`MapView`](../core/map-view.md#crs) when [`tileMatrixSet`](./tile-layer.md#tilematrixset) is
-set — the same `_CRSTileset2D` indexing `TileLayer`/`TerrainLayer` already support. `MVTLayer`
-automatically switches to the same tile-local-to-lnglat decode route (`coordinates: 'wgs84'`)
-already used for `GlobeView`, and `binary` is forced to `false` (typed-array fast-path
-allocation savings are not available in CRS or Globe views — see Performance below).
+[`MapView`](../core/map-view.md#crs). `MVTLayer` automatically switches to the same
+tile-local-to-lnglat decode route (`coordinates: 'wgs84'`) already used for `GlobeView`, and
+`binary` is forced to `false` (typed-array fast-path allocation savings are not available in
+CRS or Globe views — see Performance below). Which tile-indexing scheme is used depends on the
+source, handled automatically — no extra configuration beyond your source's normal props:
 
-`tileMatrixSet` is required for CRS views: without it, `MVTLayer` logs a warning and falls back
-to requesting tiles on the (meaningless, for CRS-native content) Mercator XYZ scheme.
+* **Mercator-pyramid source, no [`tileMatrixSet`](./tile-layer.md#tilematrixset) set (the
+  common case).** Most real MVT services — Esri's "Ocean Reference" vector layer, and most
+  other public vector-tile endpoints — are classic Mercator XYZ pyramids; they have no
+  CRS-native tiling scheme of their own. `MVTLayer` automatically reprojects the CRS view's
+  bounds into Mercator source space and requests real Mercator tiles for it, via the same
+  `MercatorCRSTileset2D` (exported as [`_MercatorCRSTileset2D`](./tile-layer.md)) that
+  [`_WarpedTileLayer`](./warped-tile-layer.md) uses to warp Mercator raster basemaps into a CRS
+  view — no `tileMatrixSet`, no extra prop, just use the layer as you would in a Mercator
+  `MapView`.
+* **CRS-native source, `tileMatrixSet` set.** If your vector-tile source is itself described by
+  an OGC `TileMatrixSet` in the view's own CRS (not a Mercator pyramid), set
+  [`tileMatrixSet`](./tile-layer.md#tilematrixset) — the same `_CRSTileset2D` indexing
+  `TileLayer`/`TerrainLayer` already support.
+* **Mercator `MapView` (no `crs` set).** Unchanged: the classic Mercator XYZ tile scheme and
+  (by default) the `binary: true` typed-array fast path.
 
 ### Performance
 
