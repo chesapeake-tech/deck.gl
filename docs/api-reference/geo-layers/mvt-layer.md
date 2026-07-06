@@ -205,6 +205,26 @@ function App() {
 </Tabs>
 
 
+## CRS views
+
+Vector tile content renders correctly inside a non-Mercator CRS
+[`MapView`](../core/map-view.md#crs) when [`tileMatrixSet`](./tile-layer.md#tilematrixset) is
+set — the same `_CRSTileset2D` indexing `TileLayer`/`TerrainLayer` already support. `MVTLayer`
+automatically switches to the same tile-local-to-lnglat decode route (`coordinates: 'wgs84'`)
+already used for `GlobeView`, and `binary` is forced to `false` (typed-array fast-path
+allocation savings are not available in CRS or Globe views — see Performance below).
+
+`tileMatrixSet` is required for CRS views: without it, `MVTLayer` logs a warning and falls back
+to requesting tiles on the (meaningless, for CRS-native content) Mercator XYZ scheme.
+
+### Performance
+
+`binary: false` (forced) means each tile's features are allocated as plain GeoJSON objects
+(`Feature[]`) rather than kept in typed arrays — the same cost `GlobeView` MVT users already
+pay. For high-feature-density sources, budget for this allocation/GC cost; there is no v1
+mitigation (a future binary-mode CRS/Globe path would need typed-array reprojection in the
+loader itself).
+
 
 ## Installation
 

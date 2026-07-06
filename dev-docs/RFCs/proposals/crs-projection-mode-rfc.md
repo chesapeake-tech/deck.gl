@@ -190,7 +190,11 @@ separate specs/PRs:
   `_CRSTileset2D` indexes tiles from OGC TileMatrixSet definitions; `TileLayer` gains a
   `tileMatrixSet` prop. Enables TiTiler-style basemaps in UTM and `WorldCRS84Quad` tile
   services — the remaining half of the #6216 ask not covered by Phase 1's rendering support
-  alone. `_WMSLayer`/`MVTLayer` support is future work.
+  alone.
+* **MVTLayer support** (implemented on this branch, Chunk E1): reuses the existing
+  `GlobeView` wgs84-decode route, generalized to `PROJECTION_MODE.CRS`; `_CRSTileset2D`
+  selection via the already-generic `tileMatrixSet` prop. `_WMSLayer` support remains future
+  work.
 * **Phase 3 — GPU warping of Web-Mercator sources** (implemented on this branch):
   `_WarpedTileLayer` renders per-tile gridded meshes, with vertices transformed Mercator →
   target CRS on CPU and the tile texture-mapped on GPU (OpenLayers-style triangulated
