@@ -26,6 +26,7 @@ import type {Feature, Geometry} from 'geojson';
 
 import {transform} from './coordinate-transform';
 import findIndexBinary from './find-index-binary';
+import {usesFeatureRoute} from './mvt-viewport-mode';
 
 import TileLayer, {TileLayerPickingInfo, TileLayerProps} from '../tile-layer/tile-layer';
 
@@ -127,8 +128,8 @@ export default class MVTLayer<
 
   initializeState(): void {
     super.initializeState();
-    // GlobeView doesn't work well with binary data
-    const binary = this.context.viewport.resolution !== undefined ? false : this.props.binary;
+    // GlobeView/CRS views don't work well with binary data
+    const binary = usesFeatureRoute(this.context.viewport) ? false : this.props.binary;
     this.setState({
       binary,
       data: null,
@@ -233,7 +234,7 @@ export default class MVTLayer<
       mvt: {
         ...loadOptions?.mvt,
         shape: binary ? 'binary' : 'geojson',
-        coordinates: this.context.viewport.resolution ? 'wgs84' : 'local',
+        coordinates: usesFeatureRoute(this.context.viewport) ? 'wgs84' : 'local',
         tileIndex: index
         // Local worker debug
         // workerUrl: `modules/mvt/dist/mvt-loader.worker.js`
@@ -265,7 +266,7 @@ export default class MVTLayer<
 
     props.autoHighlight = false;
 
-    if (!this.context.viewport.resolution) {
+    if (!usesFeatureRoute(this.context.viewport)) {
       props.modelMatrix = modelMatrix;
       props.coordinateOrigin = [xOffset, yOffset, 0];
       props.coordinateSystem = COORDINATE_SYSTEM.CARTESIAN;
@@ -311,7 +312,7 @@ export default class MVTLayer<
   }
 
   protected _isWGS84(): boolean {
-    return Boolean(this.context.viewport.resolution);
+    return usesFeatureRoute(this.context.viewport);
   }
 
   getPickingInfo(params: GetPickingInfoParams): MVTLayerPickingInfo<FeaturePropertiesT> {
