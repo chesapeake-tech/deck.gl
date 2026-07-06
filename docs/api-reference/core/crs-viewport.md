@@ -280,6 +280,57 @@ Returns:
   aggregation-layer audit spec (`docs/superpowers/specs/2026-07-05-crs-aggregation-audit.md`)
   for the full per-layer trace.
 
+### Multi-view: sharing a layer across a Mercator view and a CRS view
+
+deck.gl layers are shared across `views`: a single layer instance is drawn once per `View`,
+using that view's own `Viewport`, in one `Deck`. This already comes with a general caveat for
+tile-fetching/aggregating layers — see [Rendering Layers in Multiple
+Views](/docs/developer-guide/views.md#rendering-layers-in-multiple-views), which recommends
+duplicating the layer per view with `layerFilter` for `TileLayer`, `MVTLayer`, `HeatmapLayer`,
+and `ScreenGridLayer`. CRS support does not remove that caveat — it raises the stakes for it, and
+adds one CRS-specific instance of it (`_MapLibreStyleLayer`'s zoom-dependent styling). This is
+because sublayer *generation* for these layers (`renderLayers()`/`renderSubLayers()`, tile
+selection, `getTileData()`) runs once per update cycle against a single, shared
+`context.viewport` — not once per viewport a frame draws into (only per-vertex GPU projection is
+re-done per viewport at draw time; see the [multi-view mixed-projection audit
+report](https://github.com/visgl/deck.gl/blob/feat/crs-mapview/docs/superpowers/specs/2026-07-06-crs-multiview-audit.md)
+for the full trace). Concretely, if you share one of these layer instances across a Mercator view
+and a CRS view (or live-swap a single view's `crs` on an existing instance):
+
+* **`TileLayer`/`MVTLayer` with a `tileMatrixSet` (CRS-native tiling) or an `_WarpedTileLayer`**
+  fail loudly and safely: `CRSTileset2D`/`MercatorCRSTileset2D` throw an explicit
+  `... requires a CRS view — set the crs prop on MapView` error the moment the shared context
+  lands on a non-CRS viewport. deck.gl isolates the error to that one layer (`layer.raiseError`),
+  so the rest of the scene keeps rendering — but the layer itself stops updating in whichever
+  view doesn't have the CRS it needs, until the shared context swings back. It is not
+  deduplicated, so it can re-fire on every update cycle while the mismatch persists (e.g. while
+  panning).
+* **`MVTLayer` without a `tileMatrixSet`** (the common classic Mercator-pyramid vector-tile
+  source, auto-routed through `MercatorCRSTileset2D` for a CRS view) does not throw, because both
+  branches are valid tilesets — but tile selection, and the `binary`/`wgs84`-decode routing
+  (`usesFeatureRoute`), is computed once for whichever viewport is currently "active" and shared
+  by every view drawing the layer. The other view silently gets tiles selected for the wrong
+  camera/zoom.
+* **`_MapLibreStyleLayer`** evaluates zoom-dependent style expressions and `minzoom`/`maxzoom`
+  gating, and keys its per-tile sublayer cache, on `mercatorEquivalentZoom(context.viewport)` —
+  also computed once per update and shared. A CRS view's `mercatorEquivalentZoom` can differ from
+  a same-nominal-zoom Mercator view's by 5+ zoom levels (a small-extent CRS like a UTM zone
+  reaches the same zoom *number* at a far more zoomed-in ground scale), so whichever view isn't
+  "active" gets label/line/fill styling — and `minzoom`/`maxzoom` gating — evaluated for the
+  wrong view's ground scale.
+* **Plain geometry layers are unaffected.** `GeoJsonLayer` and friends (`PathLayer`,
+  `SolidPolygonLayer`, `ScatterplotLayer`, ...) never read `context.viewport` while deciding what
+  to build; projection is entirely a per-viewport, per-vertex GPU operation at draw time. Sharing
+  these across a Mercator view and a CRS view works exactly as it does for any other pair of
+  views.
+
+**Recommendation:** do not share a `TileLayer`/`MVTLayer`/`_WarpedTileLayer`/
+`_MapLibreStyleLayer` instance across views with different projections (Mercator vs. CRS, or two
+different CRS `crs`). Create one instance per view and use `layerFilter` to route each to its own
+view, per the general multi-view guidance linked above. This is a known architectural limitation
+(sublayer generation is not currently per-viewport) rather than something CRS support introduces
+from scratch, and is tracked as future-work for the upstream RFC rather than special-cased here.
+
 ## Source
 
 [modules/core/src/viewports/crs-viewport.ts](https://github.com/visgl/deck.gl/blob/master/modules/core/src/viewports/crs-viewport.ts)

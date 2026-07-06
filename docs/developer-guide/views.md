@@ -768,6 +768,8 @@ function App({carPose}: {
 
 Some layers, including `TileLayer`, `MVTLayer`, `HeatmapLayer` and `ScreenGridLayer`, perform expensive operations (data fetching and/or aggregation) on viewport change. Therefore, it is generally *NOT* recommended to render them into multiple views. If you do need to show e.g. tiled base map in multiple views, create one layer instance for each view and limit their rendering with `layerFilter`:
 
+This matters even more if your views use different [`MapView({crs})`](../api-reference/core/map-view.md#crs) settings (a Mercator view alongside a projected-CRS view, or two different CRSs): tile selection and CRS-dependent styling for these layers is computed once per update for whichever view's viewport is currently active in the shared layer context, not once per view — see [CRSViewport Limitations: Multi-view](../api-reference/core/crs-viewport.md#multi-view-sharing-a-layer-across-a-mercator-view-and-a-crs-view) for the specifics of what goes wrong (and what fails loudly vs. silently) per layer.
+
 <Tabs groupId="language">
   <TabItem value="js" label="JavaScript">
 
