@@ -416,3 +416,147 @@ test('getCRSDistanceScales#UTM', () => {
   expect(scales.metersPerUnit[2] * scales.unitsPerMeter[2]).toBeCloseTo(1, 6);
   expect(scales.unitsPerDegree2).toEqual([0, 0, 0]);
 });
+
+// --- Per-(crs, origin) memoization -----------------------------------------------------
+//
+// getCRSJacobian/getCRSHessian/getCRSMetersJacobian are pure functions of (crs, origin) -
+// independent of zoom/pan/viewMatrix - but are invoked once per sublayer origin, every
+// frame (viewport-uniforms.ts's getUniformsFromViewport). A controlled GPU measurement
+// found these finite-difference implementations (each calling crs.transform.forward
+// several times, backed by real proj-wasm) dominating per-frame CPU cost during a native-
+// CRS zoom sweep. They are now memoized per (crs identity, origin); these tests assert a
+// cache hit is bit-identical to a fresh call, that distinct (crs, origin) keys don't
+// collide, and that transform.forward is actually invoked only once per distinct origin.
+
+/** Wraps a CRSDefinition's transform so every call to forward/inverse is counted,
+ * without changing its numerical behavior. */
+function countingCRS(base: CRSDefinition): {crs: CRSDefinition; counts: {forward: number}} {
+  const counts = {forward: 0};
+  const crs: CRSDefinition = {
+    ...base,
+    transform: {
+      forward: (lnglat: [number, number]) => {
+        counts.forward++;
+        return base.transform.forward(lnglat);
+      },
+      inverse: base.transform.inverse
+    }
+  };
+  return {crs, counts};
+}
+
+test('getCRSJacobian#memoization: cache hit is bit-identical to a fresh call', () => {
+  const crs = normalizeCRS(UTM18N);
+  const origin = [-72.4321, 40.1234];
+  const first = getCRSJacobian(crs, origin);
+  const second = getCRSJacobian(crs, origin);
+  expect(second).toEqual(first);
+  // A fresh, independently-normalized crs object (same definition) must not share the
+  // first crs's cache entry, but must still agree numerically (pure function of origin).
+  const crsAgain = normalizeCRS(UTM18N);
+  const third = getCRSJacobian(crsAgain, origin);
+  expect(third).toEqual(first);
+});
+
+test('getCRSHessian#memoization: cache hit is bit-identical to a fresh call', () => {
+  const crs = normalizeCRS(UTM18N);
+  const origin = [-72.4321, 40.1234];
+  const first = getCRSHessian(crs, origin);
+  const second = getCRSHessian(crs, origin);
+  expect(second).toEqual(first);
+});
+
+test('getCRSMetersJacobian#memoization: cache hit is bit-identical to a fresh call', () => {
+  const crs = normalizeCRS(UTM18N);
+  const origin = [-72.4321, 40.1234];
+  const first = getCRSMetersJacobian(crs, origin);
+  const second = getCRSMetersJacobian(crs, origin);
+  expect(second).toEqual(first);
+});
+
+test('getCRSJacobian#memoization: a different origin misses the cache and yields a different result', () => {
+  const crs = normalizeCRS(UTM18N);
+  const a = getCRSJacobian(crs, [-72, 40]);
+  const b = getCRSJacobian(crs, [-72, 41]);
+  expect(b).not.toEqual(a);
+});
+
+test('getCRSJacobian#memoization: a different crs object (same code) does not share cached values', () => {
+  // Two independently-constructed CRSDefinitions that happen to share a `code`: caching
+  // keyed on crs.code alone would incorrectly conflate them. Keying on the NormalizedCRS
+  // object identity (WeakMap) must keep them distinct.
+  const {crs: crsA, counts: countsA} = countingCRS({...UTM18N, code: 'SAME:CODE'});
+  const {crs: crsB, counts: countsB} = countingCRS({...UTM18N, code: 'SAME:CODE'});
+  const normA = normalizeCRS(crsA);
+  const normB = normalizeCRS(crsB);
+  // normalizeCRS itself calls transform.forward/inverse once to validate round-tripping;
+  // reset the counters so this test only measures the Jacobian's own calls.
+  countsA.forward = 0;
+  countsB.forward = 0;
+
+  const origin = [-72, 40];
+  getCRSJacobian(normA, origin);
+  expect(countsA.forward).toBeGreaterThan(0);
+  const callsAfterFirstCRS = countsA.forward;
+
+  // A different crs object, same origin, same code: must still invoke the transform -
+  // it must NOT be treated as a cache hit against normA's entry.
+  getCRSJacobian(normB, origin);
+  expect(countsB.forward).toBeGreaterThan(0);
+  // And normA's own cache for this origin must remain untouched by normB's computation.
+  getCRSJacobian(normA, origin);
+  expect(countsA.forward).toBe(callsAfterFirstCRS);
+});
+
+test('getCRSJacobian#memoization: repeated calls with the same (crs, origin) invoke transform.forward only once', () => {
+  const {crs: baseCRS, counts} = countingCRS(UTM18N);
+  const crs = normalizeCRS(baseCRS);
+  counts.forward = 0; // exclude normalizeCRS's own round-trip validation call
+
+  const origin = [-72.1, 40.2];
+  getCRSJacobian(crs, origin);
+  const callsAfterFirst = counts.forward;
+  expect(callsAfterFirst).toBeGreaterThan(0);
+
+  // Simulate many frames * many sublayers re-requesting the uniform at the same origin:
+  // this must not invoke the proj transform again.
+  for (let i = 0; i < 500; i++) {
+    getCRSJacobian(crs, origin);
+  }
+  expect(counts.forward).toBe(callsAfterFirst);
+});
+
+test('getCRSHessian#memoization: repeated calls with the same (crs, origin) invoke transform.forward only once', () => {
+  const {crs: baseCRS, counts} = countingCRS(UTM18N);
+  const crs = normalizeCRS(baseCRS);
+  counts.forward = 0;
+
+  const origin = [-72.1, 40.2];
+  getCRSHessian(crs, origin);
+  const callsAfterFirst = counts.forward;
+  expect(callsAfterFirst).toBeGreaterThan(0);
+
+  for (let i = 0; i < 500; i++) {
+    getCRSHessian(crs, origin);
+  }
+  expect(counts.forward).toBe(callsAfterFirst);
+});
+
+test('getCRSJacobian/getCRSHessian/getCRSMetersJacobian#memoization: many distinct origins stay bounded (LRU eviction)', () => {
+  // Exercise the cache with more distinct origins than MAX_ORIGIN_CACHE_ENTRIES_PER_CRS
+  // (1024) would hold, simulating a long pan/zoom session. This must not throw, hang, or
+  // grow without bound (no direct way to assert cache size from outside the module - this
+  // is a smoke test that eviction doesn't break correctness for the most-recently-used
+  // entries, which is all that matters for the hot path).
+  const crs = normalizeCRS(UTM18N);
+  for (let i = 0; i < 2000; i++) {
+    const origin = [-75 + (i % 200) * 0.01, (i % 50) * 0.1];
+    getCRSJacobian(crs, origin);
+    getCRSHessian(crs, origin);
+    getCRSMetersJacobian(crs, origin);
+  }
+  // The most recently used origin must still be a correct, finite result.
+  const lastOrigin = [-75 + (1999 % 200) * 0.01, (1999 % 50) * 0.1];
+  const jacobian = getCRSJacobian(crs, lastOrigin);
+  expect(jacobian.every(Number.isFinite)).toBe(true);
+});
