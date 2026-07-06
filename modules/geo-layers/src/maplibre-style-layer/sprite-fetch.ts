@@ -15,7 +15,7 @@ export interface FetchSpriteAtlasOptions {
 }
 
 /** Review fix (Round 8 fork feedback #5): a resolved `spriteAtlas` — `{image, mapping}` — is easy
- * to build once fetched (see `spriteToIconMapping`), but every consumer of a real MapLibire style
+ * to build once fetched (see `spriteToIconMapping`), but every consumer of a real MapLibre style
  * (this v1's own app-side integration included) ends up re-writing the same ~30 lines: fetch the
  * style's `sprite` base URL's `.json` and `.png` (or `@2x` variants) and assemble the atlas
  * object. `_MapLibreStyleLayer` still does not fetch anything itself (the
