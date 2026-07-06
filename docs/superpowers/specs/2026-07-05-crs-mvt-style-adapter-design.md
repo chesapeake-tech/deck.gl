@@ -1,0 +1,420 @@
+# Design: MVT in CRS Views + MapLibre Style Adapter (Chunk E, E1 — promoted and expanded)
+
+**Date:** 2026-07-05
+**Status:** Proposed
+**Motivation:** Chunk E, item E1 of the CRS follow-on roadmap
+(`docs/superpowers/specs/2026-07-05-crs-roadmap.md:50-51`): "MVT in CRS views — wgs84-decode
+route + `MercatorCRSTileset2D` selection; costs the binary fast path. Spec-first." E1 was
+originally the last, most-deferred chunk ("Chunk E — deferred features (largest, last)"). It is
+promoted here because Fathom's (Clarity's underwater-survey platform) motivating hybrid case
+needs it now: a warped Web-Mercator raster reference basemap (Esri Ocean, via Phase 3's
+`_WarpedTileLayer`) with a **vector** reference layer of point labels (soundings, place names,
+navigation aids — Esri "Ocean Reference" style MVT service) drawn on top, all inside one UTM
+`MapView`. This spec expands E1 in two independently shippable stages: Stage 1 is the item as
+originally scoped (MVTLayer works in CRS views); Stage 2 is a new, larger surface — a MapLibre
+style-spec adapter — added because once vector tiles render correctly in a CRS view, the next
+question every evaluator asks is "can I point it at an existing MapLibre style JSON instead of
+hand-writing accessors," per visgl/deck.gl discussion #6892 (opened 2022, unresolved, cites the
+same ask twice).
+**Depends on:** Phase 1 (`MapView.crs`, `_CRSViewport`, `PROJECTION_MODE.CRS`, the
+Jacobian+Hessian common-space projection); Phase 2 (`_CRSTileset2D`, `tile-matrix-set.ts`,
+`TileLayer`'s `tileMatrixSet` prop, already wired through to any `TileLayer` subclass including
+`MVTLayer` — see Design, Stage 1); Phase 3 (`_WarpedTileLayer`, `MercatorCRSTileset2D`,
+precedent for a Mercator-specific raster tile-selection class distinct from the CRS-native one —
+this spec corrects a roadmap-wording ambiguity between the two; see Decisions for review #1
+footnote in Stage 1). Chunk A1 (METER_OFFSETS Jacobian rotation) is orthogonal — Stage 1 uses
+only the LNGLAT common-space path, not METER_OFFSETS.
+
+## Decisions for review
+
+Settled below with justification; flagged here because they are user-facing or affect the
+branch's stated policies (no new runtime deps, zero behavior change outside CRS views):
+
+1. **Stage 2 module placement: inside `@deck.gl/geo-layers`, not a new package.** No
+   `@deck.gl/experimental` package exists on this branch or upstream; the established
+   convention is an underscore-aliased export from an existing package's barrel
+   (`_WMSLayer`, `_CRSTileset2D`, `_WarpedTileLayer` all in `modules/geo-layers/src/index.ts`;
+   `_CRSViewport`, `_GlobeView` in `@deck.gl/core`; `_TerrainExtension` in
+   `@deck.gl/extensions`). A new package would add a whole release/build/versioning surface
+   for one experimental, single-purpose module, and `geo-layers` is already where the
+   adapter's two real dependencies live (`MVTLayer`, `TileLayer`'s tile-source machinery).
+   Placement: `modules/geo-layers/src/maplibre-style-layer/`, exported as
+   `_MapLibreStyleLayer` (mirroring the `_WarpedTileLayer` naming/doc pattern — "Experimental"
+   in its own `.md` page title, no TOC "Experimental" section since none exists).
+2. **Style-spec evaluator: injected, not bundled — mirrors `CRSDefinition`/`createProj4CRS`
+   exactly.** The branch's established pattern for keeping `@deck.gl/core` free of a
+   projection-library runtime dependency is `CRSDefinition.transform: {forward, inverse}` —
+   the app constructs the transform (e.g. via `@math.gl/proj4`'s `Proj4Projection`, only ever
+   imported by fixtures/tests: `test/modules/core/viewports/crs-fixtures.ts:1,5`) and hands
+   deck.gl the two functions (`modules/core/src/viewports/crs-utils.ts:445-469`,
+   `createProj4CRS`'s doc comment: "stays free of a runtime dependency on proj4; bring
+   whichever converter your app already constructed"). This spec applies the identical shape
+   to MapLibre style evaluation: the adapter accepts a small `MapLibreStyleEvaluator`
+   interface (`createPropertyExpression`, `featureFilter` — the two entry points actually
+   used, not the whole package) as a constructor argument; the app imports
+   `@maplibre/maplibre-gl-style-spec` itself and passes its exports through. `@deck.gl/geo-layers`
+   never imports it. Precedent for the *devDependency-for-tests* half of this pattern already
+   exists: `@math.gl/proj4` is a root `package.json` devDependency (`package.json:54`), used
+   only by test fixtures and specs (`test/modules/core/viewports/crs-fixtures.ts`,
+   `crs-utils.node.spec.ts`, `create-proj4-crs.node.spec.ts`), never by `@deck.gl/core`'s
+   published `dependencies`. `@maplibre/maplibre-gl-style-spec` is added as a root devDependency
+   the same way (v25.x; confirmed dual ESM/CJS, ~6 tiny transitive deps of its own, already
+   present transitively in this repo's `node_modules` at v24.3.1 via `maplibre-gl`, so no new
+   *installed* package tree of consequence — only a new explicit devDependency line and a
+   pinned major version for test determinism). Precedent for the adapter architecture itself
+   (not just the injection idiom): OpenLayers' `ol-mapbox-style` uses this exact package's
+   `createPropertyExpression`/`featureFilter` (aliased `createFilter`) to compile MapLibre
+   style layers once and evaluate them per-OpenLayers-feature — the deck.gl adapter mirrors
+   its compile-once/evaluate-per-feature architecture, inverting only the dependency direction
+   (injected, not imported) to match this branch's policy.
+3. **Zoom re-evaluation: per-integer-zoom, not continuous.** MapLibre's own style-spec
+   "interpolate"/"exponential" zoom functions are defined as camera functions between integer
+   zoom *stops*; `createPropertyExpression`'s `'camera'`/`'composite'` result kinds expose
+   `zoomStops`, and upstream mapbox-gl-js/maplibre-gl-js itself re-buckets symbol layout and
+   re-evaluates camera expressions once per integer zoom level internally (tile buckets are
+   built per integer zoom), not continuously per frame. The adapter's v1 re-evaluation
+   strategy: bucket to `Math.floor(viewport.zoom)`, wire it into each generated layer's
+   `updateTriggers` (`getFillColor`, `getLineWidth`, `getLineColor`, `getElevation`,
+   `getSize`, `getCollisionPriority`, ... — whichever accessors were compiled from
+   zoom-dependent (`'camera'`/`'composite'`) expressions only; zoom-independent
+   (`'constant'`/`'source'`) expressions get no updateTrigger and are evaluated once).
+   Rejected: continuous re-evaluation (recomputing every accessor every render frame,
+   regardless of whether the camera function actually changes value within the current
+   integer zoom bucket) — this defeats deck.gl's attribute-diffing update model (every
+   accessor becomes "always dirty"), for a visual difference that is bounded by the
+   MapLibre-defined interpolation curve's max slope over one zoom unit (typically small for
+   the base-2 curves used in real styles) and is itself how upstream MapLibre already
+   discretizes. Cost/benefit: per-integer bucketing is O(zoom levels) attribute rebuilds per
+   session instead of O(frames); a future v2 could special-case "continuous" for cheap
+   scalar-only expressions if a style author demonstrably needs sub-zoom-level smoothness, but
+   no such case is known today and it is out of v1 scope.
+4. **Curved-label fallback: horizontal label at the line's midpoint, not omission.** MapLibre's
+   `symbol-placement: 'line'` (curved/along-line label placement, arbitrary glyph rotation per
+   line segment) has no deck.gl equivalent — `TextLayer` places one anchored, optionally
+   rotated (`getAngle`), horizontal-per-instance label per data point; it does not lay out
+   glyphs along a path. Two choices: omit the label entirely (silently drop line-placed symbol
+   layers), or approximate with a single horizontal `TextLayer` label anchored at the line's
+   midpoint (reusing the exact point-symbol code path built for `symbol-placement: 'point'`,
+   with `getAngle: 0` — or optionally the line's local bearing at the midpoint, still a single
+   flat rotation, not a curve). **Decision: approximate at the midpoint.** Justification:
+   silent omission is indistinguishable from an adapter bug (a road/river with a label in the
+   source style simply has no rendered label, with nothing in the visual output signaling
+   "this is a known, documented gap" — a station reviewing map output has no way to tell
+   intentional-cut from broken-adapter); a midpoint label costs zero new sublayer code (it is
+   the point-symbol path with one geometry-to-point reduction step) and gives at least
+   presence/searchability of the label text, which several simplified/static map renderers
+   already treat as an acceptable degradation for exactly this reason. The cost — no curve, no
+   repeated-label-along-long-features, wrong anchor for very long or sharply curved lines — is
+   real and is documented prominently (adapter emits one `console.warn` per distinct
+   style-layer `id` the first time a `symbol-placement: 'line'` layer is encountered, and the
+   limitation is called out in the module's doc page). This does not affect Fathom's
+   motivating case, which is point-placed reference labels, not line labels.
+5. **Stage 1's honest perf cost: `wgs84` decode mode allocates; `binary` mode does not — and
+   CRS views cannot use `binary` in v1.** `binary: true` (MVTLayer's default,
+   `modules/geo-layers/src/mvt-layer/mvt-layer.ts:52`) exists specifically to avoid per-feature
+   JS object/array allocation — tile content stays in typed arrays
+   (`BinaryFeatureCollection`) all the way to the GPU buffer upload. `coordinates: 'wgs84'`
+   mode (the CRS route; see Stage 1 Design) requires `shape: 'geojson'` (binary forced
+   `false`), which allocates a `Feature[]` per tile via `binaryToGeojson` plus a `lerp` +
+   `unprojectFlat` call per vertex (`modules/geo-layers/src/mvt-layer/coordinate-transform.ts`)
+   to convert tile-local `[0,1]` coordinates to lnglat. This is the exact tradeoff already
+   accepted, silently, for `GlobeView` today (`initializeState`,
+   `mvt-layer.ts:130-131`: "GlobeView doesn't work well with binary data") — Stage 1 does not
+   invent a new cost, it extends an already-shipped one to a second projection mode. It is
+   real and should be sized before high-feature-density CRS+MVT deployments: expect the same
+   GC/allocation profile Globe-mode MVT users already have. No mitigation is proposed in v1
+   (see Non-goals); a future binary-mode CRS path would need typed-array reprojection in the
+   loader itself, out of scope here.
+
+## Problem
+
+Two gaps block the Fathom hybrid case and the broader "style the vector tiles like MapLibre
+does" ask:
+
+1. **`MVTLayer` is not CRS-aware.** `docs/api-reference/core/crs-viewport.md:260`: "`MVTLayer`
+   and `_WMSLayer` are not yet CRS-aware." `dev-docs/RFCs/proposals/crs-projection-mode-rfc.md:193`:
+   "`_WMSLayer`/`MVTLayer` support is future work." `docs/superpowers/specs/2026-07-04-crs-tiles-design.md:39`:
+   "MVTLayer in CRS views — MVT content transform assumes Mercator tiles; follow-up." Concretely:
+   `MVTLayer.renderSubLayers` (`mvt-layer.ts:264-273`) unconditionally builds a Web-Mercator
+   power-of-two tile transform (`modelMatrix` scaling by `WORLD_SIZE / 2^z`,
+   `coordinateOrigin` from `x/y/2^z`, `COORDINATE_SYSTEM.CARTESIAN`) for every viewport except
+   `GlobeView` (gated by `viewport.resolution !== undefined`, a Globe-only signal) — a plain
+   `_CRSViewport` falls through to this Mercator branch exactly like a classic
+   `WebMercatorViewport` does, which is wrong for non-Mercator CRS content.
+2. **No path from a MapLibre/Mapbox style JSON to deck.gl layers.** visgl/deck.gl discussion
+   #6892 (opened by corrigancd, 2022; maintainer response declined due to spec-maintenance
+   burden, no committed timeline; a second requester in 2023 hit the same gap for a different
+   host context) asks exactly this: render MVT content styled by an existing MapLibre style,
+   without hand-translating every paint/layout property to deck.gl accessors. OpenLayers solved
+   the equivalent problem with `ol-mapbox-style`, proving the architecture (compile style-spec
+   expressions once, evaluate per-feature) is portable to a non-Mapbox-GL rendering stack.
+
+Fathom's driving scenario needs both: a warped Esri Ocean Mercator raster basemap (Phase 3,
+already solved) plus Esri's companion "Ocean Reference" vector layer — political boundaries,
+soundings, and (critically) point labels — styled per Esri's published MapLibre-compatible
+style, rendered correctly co-registered in a UTM `MapView`.
+
+## Goals / acceptance
+
+### Stage 1 — MVT in CRS views (independently shippable; this alone satisfies E1 as originally scoped)
+
+1. `MVTLayer` with `tileMatrixSet` set renders polygon/line/point vector-tile content, correctly
+   positioned, inside a non-Mercator CRS `MapView` — via `_CRSTileset2D` tile selection (already
+   generic through `TileLayer`, Phase 2) + the `wgs84` coordinate-decode route (already exists,
+   currently gated to `GlobeView` only) + the existing `PROJECTION_MODE.CRS` LNGLAT common-space
+   path (Phase 1, Jacobian + Hessian; zero new shader code).
+2. Picking, `autoHighlight`, and `highlightedFeatureId` behave correctly in CRS views — proven
+   by regression tests, not new code (see Design: these paths are already coordinate-agnostic
+   or already exercised by the pre-existing Globe+wgs84 combination).
+3. Tile-edge clipping is skipped for CRS views exactly as it already is for `GlobeView` (same
+   generalized condition, not new clip logic).
+4. **Zero behavior change** for every existing MVTLayer usage: classic Mercator (`binary: true`
+   default) and existing `GlobeView` (`wgs84`, `binary: false`) paths are byte-identical after
+   this change — both are regression-tested.
+5. **Acceptance scenario (Fathom hybrid case):** in one UTM `MapView`, a warped Esri Ocean
+   basemap (`_WarpedTileLayer`, Phase 3, unchanged) renders underneath an `MVTLayer`
+   (`tileMatrixSet` set, point-geometry reference labels) rendered via `GeoJsonLayer`'s
+   point/`TextLayer` sublayer path — both correctly co-registered at multiple zooms and after
+   pan/zoom, with the vector point labels landing on their correct UTM-projected positions
+   (verified against an independently computed `crs.transform.forward` expectation, the same
+   technique Phase 3/4's tests already use).
+
+### Stage 2 — MapLibre style-spec adapter (independently shippable; depends on Stage 1 only insofar as it is commonly used together, not in code)
+
+1. A new experimental module, `_MapLibreStyleLayer` (name TBD at implementation, working name
+   used throughout this spec), takes `(style: StyleSpecification, source: {tiles, tileMatrixSet?},
+   evaluator: MapLibreStyleEvaluator)` and returns a `LayersList` — one deck.gl layer (or
+   sublayer group) per MapLibre style layer, in style-JSON `layers` order (for correct
+   z-ordering), each filtered (`filter`) and styled (paint/layout expressions) per-feature.
+2. v1 fidelity tiers (see Design for the mapping table):
+   - **In scope:** `background`, `fill` (+ `fill-opacity`, `fill-color`, `fill-outline-color`),
+     `line` (+ `line-width`, `line-color`, `line-dasharray` via `PathStyleExtension`),
+     `fill-extrusion` (+ `fill-extrusion-height`/`-base` via `SolidPolygonLayer`'s
+     `extruded`/`getElevation`), a sprite sheet (`sprite` URL pair) mapped to `IconLayer`'s
+     `iconAtlas`/`iconMapping` with a thin key-shape transform, and `symbol` point-placement
+     labels via `TextLayer` + `CollisionFilterExtension` (font stacks approximated by one
+     resolved browser `fontFamily`; `symbol-sort-key`/layer paint priority mapped to
+     `getCollisionPriority`).
+   - **Out of scope, documented (not silently missing):** `symbol-placement: 'line'` curved
+     labels (Decisions for review #4 — approximated at the line midpoint, not omitted, but
+     documented as a fidelity cut), `line-gradient`, `fill-pattern`, `raster`/`hillshade`/
+     `heatmap` style layers (skipped with a `console.warn` per encountered layer type), glyph
+     PBF font parity (browser-font approximation only, no SDF glyph-atlas fetch/parity with
+     the style's declared `glyphs` URL).
+3. **Acceptance scenario:** the same Fathom hybrid case as Stage 1, but the vector reference
+   layer's styling (colors, line dash for boundaries, point-label text/placement/priority) comes
+   from feeding Esri's actual MapLibre-compatible style JSON through the adapter, rather than
+   hand-written deck.gl accessors — i.e., Stage 2's acceptance is Stage 1's acceptance scenario
+   with the styling authored declaratively instead of by hand.
+4. **Zero new runtime dependency** in any published `@deck.gl/*` package (Decisions for review
+   #2) — `@maplibre/maplibre-gl-style-spec` is a root devDependency only, imported by tests and
+   by consuming applications, never by `@deck.gl/geo-layers`'s own `dependencies`.
+
+## Non-goals
+
+- **Stage 1: `binary: true` (typed-array fast path) in CRS views.** Explicitly unsupported in
+  v1, not a TODO — `binary` is forced `false` whenever the wgs84/CRS route is taken (mirroring
+  the existing Globe behavior verbatim). See Decisions for review #5.
+- **Stage 1: the roadmap's literal wording, corrected.** `docs/superpowers/specs/2026-07-05-crs-roadmap.md:51`
+  names `MercatorCRSTileset2D` as the tile-selection class for E1. Investigation shows this is
+  imprecise: `MercatorCRSTileset2D` (`modules/geo-layers/src/warped-tile-layer/mercator-crs-tileset-2d.ts:36`)
+  selects standard Web-Mercator XYZ *raster* tiles for `_WarpedTileLayer`'s mesh-warping —
+  it is the Phase 3 raster-warp mechanism, unrelated to vector content. The class this item
+  actually needs is `_CRSTileset2D` (`modules/geo-layers/src/tileset-2d/crs-tileset-2d.ts`),
+  already reachable from any `TileLayer` subclass (including `MVTLayer`) via the existing
+  `tileMatrixSet` prop and `TileLayer._getTilesetClass()` (`tile-layer.ts:275-281`) — the same
+  mechanism Phase 4's `TerrainLayer` fix used. No new tileset-selection code is needed for
+  Stage 1 at all (see Design). This spec supersedes the roadmap line's wording.
+- **Stage 1: non-integer/adaptive tile LOD, far-field pitched-view over-fetch.** Pre-existing,
+  documented `_CRSTileset2D`/`MercatorCRSTileset2D` limitation (Chunk B1); unaffected either way
+  by this item.
+- **Stage 1: `zRange`/pitch-based visibility culling nuances in CRS views.** Already documented
+  elsewhere as a pre-existing limitation (`crs-tiles-design.md`, `crs-raster-warp-design.md:67`,
+  `crs-terrain-design.md` Non-goals); unaffected by this item.
+- **Stage 2: `symbol-placement: 'line'` true curved labels, `line-gradient`, `fill-pattern`,
+  `raster`/`hillshade`/`heatmap` style layers, glyph-PBF font parity.** See Goals #2 and
+  Decisions for review #4 for the one partial exception (midpoint-label approximation).
+- **Stage 2: style spec versions/features beyond what `@maplibre/maplibre-gl-style-spec`
+  itself parses** (e.g. speculative/experimental MapLibre-only spec extensions not yet in a
+  released style-spec version) — the adapter is only as current as the evaluator version the
+  app injects.
+- **Stage 2: a style *editor*, live style-diffing, or MapLibre GL JS interop/co-rendering.**
+  This is a one-way style-JSON-to-deck.gl-layers converter, not a MapLibre GL JS replacement or
+  companion renderer.
+- **Stage 2: continuous (sub-integer-zoom) paint re-evaluation.** See Decisions for review #3.
+
+## Design
+
+### Stage 1 — MVT in CRS views
+
+**Headline finding: `GlobeView` already exercises almost the exact code path this item needs.**
+`MVTLayer` already has a second, non-Mercator-CARTESIAN rendering mode — built for `GlobeView`,
+gated everywhere by `viewport.resolution !== undefined` (a signal only `GlobeViewport` sets):
+
+| Site | Globe-only condition today | Behavior in that branch |
+|---|---|---|
+| `initializeState` (`mvt-layer.ts:130-131`) | `viewport.resolution !== undefined` | forces `binary = false` |
+| `getTileData` (`mvt-layer.ts:236`) | `viewport.resolution ? 'wgs84' : 'local'` | loader decodes tile-local coords straight to lnglat (`transform()`/`transformTileCoordsToWGS84`, `coordinate-transform.ts:49-62`, a generic lerp between the tile's lnglat bbox corners — works for any viewport, not Mercator-specific) |
+| `renderSubLayers` (`mvt-layer.ts:268-273`) | `!viewport.resolution` | Mercator `modelMatrix`/`coordinateOrigin`/`CARTESIAN`/`ClipExtension` branch is **skipped**; sublayer falls through to plain `GeoJsonLayer` defaults (`COORDINATE_SYSTEM.LNGLAT`) |
+| `getPickingInfo` (`mvt-layer.ts:326-332`), `_isWGS84()` (`mvt-layer.ts:313-315`) | `!this._isWGS84()` | skips the tile-local→lnglat transform on the picked feature (already lnglat) |
+
+That is: Globe mode already renders MVT content as plain lnglat `GeoJsonLayer` features with no
+Mercator tile transform and no `ClipExtension`, and picking/highlight already handle that
+combination correctly (`_updateAutoHighlight`/`findIndexBinary`/`getHighlightedObjectIndex` are
+feature-ID/index-based, not coordinate-based — no change needed there at any zoom/projection).
+**The fix is to route `PROJECTION_MODE.CRS` viewports through this same, already-proven branch**,
+not to build a new one.
+
+Concretely:
+
+1. Introduce one shared predicate (replacing the four independent `viewport.resolution`
+   checks above) — e.g. `usesFeatureRoute(viewport): boolean` returning true for `GlobeView`
+   (`viewport.resolution !== undefined`, unchanged) **or** `viewport.projectionMode ===
+   PROJECTION_MODE.CRS` (new). Every one of the four call sites above switches to this
+   predicate; no other source change to those methods is needed — the Globe branches were
+   already coordinate-system-generic (the lerp-to-lnglat transform, the lnglat `GeoJsonLayer`
+   default, the feature-ID picking) precisely because Globe was the branch's first non-Mercator
+   consumer.
+2. **Tile selection needs no new code.** `MVTLayer extends TileLayer`
+   (`mvt-layer.ts:112` region) and inherits `TileLayerProps.tileMatrixSet`
+   (`tile-layer.ts:78`); `TileLayer._getTilesetClass()` (`tile-layer.ts:275-281`) already
+   switches to `_CRSTileset2D` whenever `tileMatrixSet` is set, regardless of layer subclass —
+   this is the exact mechanism Phase 4's `TerrainLayer` fix reused, and `MVTLayer` gets it for
+   free by inheritance. `_CRSTileset2D.getTileMetadata()`'s `bbox` field
+   (`crs-tileset-2d.ts:171-176`) already returns the `{west, south, east, north}`
+   `GeoBoundingBox` shape `transformTileCoordsToWGS84` already expects
+   (`mvt-layer.ts:471-492` region) — no glue code between tile metadata and the coordinate
+   transform.
+3. **A CRS view without `tileMatrixSet` is explicitly unsupported, not silently wrong.** Today's
+   implicit tile scheme when `tileMatrixSet` is absent (`worldScale = 2^z`, `WORLD_SIZE = 512`
+   power-of-two Mercator quadtree) is meaningless for arbitrary CRS content. When
+   `projectionMode === PROJECTION_MODE.CRS` and `tileMatrixSet` is not set, `MVTLayer` logs a
+   `log.warn` once (mirroring existing `log.warn` usage in the file, e.g. `mvt-layer.ts:278`)
+   pointing at the docs; behavior is otherwise unspecified (most likely: tiles requested at
+   nonsensical z/x/y for the source, empty/wrong content) — this is a documented limitation,
+   not a crash-prevention guarantee.
+4. **`getHighlightedObjectIndex`** (`mvt-layer.ts:344` region) reads `tile.content` and branches
+   internally on `this.state.binary`; since `binary` is already forced `false` for the wgs84
+   route (step 1), this method's non-binary branch is exactly the one `GlobeView` already
+   exercises today — Stage 1 adds a regression test asserting this, not new logic.
+5. **`ClipExtension` skip.** `renderSubLayers`'s `if (!this.context.viewport.resolution)`
+   (`mvt-layer.ts:268`) becomes `if (!usesFeatureRoute(viewport))` — for CRS views, no
+   `ClipExtension` is added, matching Globe (tile seams are a pre-existing, separately tracked
+   concern — Chunk B2 — for every non-Mercator-CARTESIAN MVTLayer mode already, not introduced
+   here).
+
+No shader/GLSL change: lnglat-coordinate features route through `getOffsetOrigin`
+(`modules/core/src/shaderlib/project/viewport-uniforms.ts:81`, `case PROJECTION_MODE.CRS`
+already grouped with `WEB_MERCATOR_AUTO_OFFSET` for `coordinateSystem === 'lnglat'`) into
+`project.glsl.ts`'s existing `PROJECTION_MODE_CRS` branch (`project.glsl.ts:235-264`, the
+Jacobian-times-degree-offset plus the quadratic Hessian correction term, JS-side uniforms from
+`getCRSJacobianAtOrigin`/`getCRSHessianAtOrigin`,
+`modules/core/src/viewports/crs-utils.ts:243-250,307-348`) — the exact same path every other
+lnglat-coordinate layer (`GeoJsonLayer`, `ScatterplotLayer`, ...) already uses in a CRS view.
+`MVTLayer`'s only job is to hand its `GeoJsonLayer` sublayer plain lnglat coordinates, which
+step 1-2 above already accomplish.
+
+### Stage 2 — MapLibre style-spec adapter
+
+**Shape of the module:**
+
+```ts
+interface MapLibreStyleEvaluator {
+  createPropertyExpression: typeof import('@maplibre/maplibre-gl-style-spec').createPropertyExpression;
+  featureFilter: typeof import('@maplibre/maplibre-gl-style-spec').featureFilter;
+}
+
+interface MapLibreStyleLayerProps {
+  style: StyleSpecification;        // the MapLibre style JSON (or the relevant `layers`+`sources` subset)
+  data: string;                      // {z}/{x}/{y} tile URL template for the vector source (mirrors MVTLayer's `data`)
+  tileMatrixSet?: TileMatrixSet;     // CRS-native tiling (Stage 1); omit for classic Mercator XYZ
+  evaluator: MapLibreStyleEvaluator; // injected — see Decisions for review #2
+  spriteAtlas?: {image: string; mapping: string}; // resolved sprite PNG + JSON, app-fetched
+}
+```
+
+`_MapLibreStyleLayer` is a `CompositeLayer` that, per style-layer entry in `style.layers`
+(in order, for z-ordering):
+
+1. Resolves `filter` once via `evaluator.featureFilter(layer.filter)` →
+   `.filter({zoom}, feature)` called per-feature inside the relevant sublayer's accessor (or,
+   for cheap pre-filtering, once per tile against the tile's already-parsed feature array before
+   building sublayer data — an optimization left to implementation, not a correctness
+   requirement).
+2. Compiles each relevant paint/layout property via
+   `evaluator.createPropertyExpression(value, propertySpec)` once per style-layer (not per
+   feature/frame); the resulting `.evaluate(globals, feature)` closure becomes the deck.gl
+   accessor body (`getFillColor: (f) => toDeckColor(compiled.fillColor.evaluate({zoom}, f))`,
+   etc.) — mirroring `ol-mapbox-style`'s compile-once/evaluate-per-feature architecture
+   (Decisions for review #2).
+3. Maps to one deck.gl layer per style-layer `type`:
+
+| MapLibre style-layer `type` | deck.gl layer | Notes |
+|---|---|---|
+| `background` | `SolidPolygonLayer` over the current viewport bounds, or a full-screen quad | no source data; `background-color`/`background-opacity` only |
+| `fill` | `GeoJsonLayer` (polygon sublayer) / `SolidPolygonLayer` | `fill-color`, `fill-opacity`, `fill-outline-color` → `getFillColor`, `getLineColor`, `stroked: true` |
+| `line` | `PathLayer` (via `GeoJsonLayer`'s line sublayer) + `PathStyleExtension` | `line-dasharray` → `getDashArray` (`modules/extensions/src/path-style/path-style-extension.ts:34-56,39`); `line-width`, `line-color` → `getWidth`/`getLineColor` |
+| `fill-extrusion` | `SolidPolygonLayer` `extruded: true` | `fill-extrusion-height`/`-base` → `getElevation`/`getElevation` offset (base handled by pre-subtracting or a two-layer stack if the style separates base/height per-feature) |
+| `symbol` (icon) | `IconLayer` | `icon-image` → `iconMapping` key lookup; sprite sheet → `iconAtlas`/`iconMapping` (`modules/layers/src/icon-layer/icon-layer.ts:33-35`, `IconMapping` shape `{x,y,width,height,anchorX?,anchorY?,mask?}` — a MapLibre sprite JSON's `{x,y,width,height,pixelRatio,sdf}` needs only `pixelRatio` dropped and `sdf → mask` renamed, no restructuring) |
+| `symbol` (text) | `TextLayer` + `CollisionFilterExtension` | `text-field` → `getText`; `text-font` → one resolved `fontFamily` (browser-font approximation, Decisions for review — not enumerated as its own decision since it is a known, accepted v1 cut, not a contested tradeoff); `symbol-sort-key`/paint priority → `getCollisionPriority` (`collision-filter-extension.ts:16-37,20`); `symbol-placement: 'point'` → one label per feature; `symbol-placement: 'line'` → midpoint approximation (Decisions for review #4) |
+| `raster`, `raster-particle`, `hillshade`, `heatmap` | *(skipped)* | out of scope; `console.warn` once per style-layer `id` |
+
+Feature access mirrors `GeoJsonLayer`'s existing accessor convention exactly:
+`Accessor<Feature<Geometry, Properties>, T>`, i.e. accessors receive `{properties, geometry}`
+(`modules/layers/src/geojson-layer/geojson-layer.ts:86` region;
+`modules/layers/src/geojson-layer/geojson-binary.ts:31-56`'s `binaryToFeatureForAccesor`
+reconstructs the same shape even from binary-mode tiles) — the adapter's compiled
+`.evaluate(globals, feature)` closures are called with exactly this object, so
+`feature.properties['some-tag']`-style style-spec expressions (`["get", "some-tag"]`) work
+unmodified.
+
+**Zoom re-evaluation wiring** (Decisions for review #3): for each generated sublayer, build an
+`updateTriggers` entry per zoom-dependent accessor keyed on `Math.floor(viewport.zoom)`, sourced
+from `this.context.viewport.zoom` inside `updateState`/`renderLayers` (the same place
+`TerrainLayer`'s `updateTriggers.getTileData.projectionMode` pattern already reads
+`this.context.viewport.projectionMode`, `terrain-layer.ts` — precedent for reading `viewport.*`
+into an `updateTriggers` value on this branch). Accessors compiled from `'constant'`/`'source'`
+expressions get no zoom entry (never re-evaluated on pan/zoom, only on data change).
+
+## Quality / performance envelope
+
+- **Stage 1** adds no new per-vertex cost beyond what Globe-mode MVT already pays today
+  (`wgs84` decode allocation, Decisions for review #5); `_CRSTileset2D`'s tile-metadata cost is
+  already paid once per tile load regardless of layer (Phase 2/4 precedent).
+- **Stage 2**: expression compilation is O(style layers), once per style (not per tile, not per
+  feature); per-feature cost is O(1) evaluator calls per compiled accessor per zoom-bucket
+  change — bounded by `Math.floor(zoom)` transitions (Decisions for review #3), not by
+  frame rate or continuous camera motion.
+- **Stage 2** adds zero GPU/shader changes — all mapped layers (`SolidPolygonLayer`, `PathLayer`,
+  `IconLayer`, `TextLayer`) are existing, unmodified deck.gl core/layers/extensions.
+- Both stages: zero new runtime dependency in any published package (Stage 1: none needed at
+  all; Stage 2: injected, Decisions for review #2).
+
+## Testing strategy
+
+- **Stage 1**: `.node.spec.ts` for the new shared predicate (`usesFeatureRoute`) covering
+  Mercator/Globe/CRS/non-geospatial inputs; a `.spec.ts` (headless layer lifecycle, mirroring
+  `test/modules/geo-layers/mvt-layer.spec.ts`'s existing structure) asserting a `MVTLayer` with
+  `tileMatrixSet` + a UTM `_CRSViewport` selects `_CRSTileset2D`, forces `binary: false`, omits
+  `ClipExtension`, and produces `GeoJsonLayer` sublayer features at lnglat coordinates matching
+  an independently computed expectation; full regression run of the existing Mercator- and
+  Globe-mode MVTLayer spec/render-test suites (byte-identical, no assertion changes).
+- **Stage 2**: `.node.spec.ts` per style-layer-type mapping (filter compiled+evaluated correctly,
+  paint expression compiled+evaluated correctly at 2+ zoom buckets, sprite-mapping key-shape
+  transform correct, dasharray/collision-priority wiring correct) using a small
+  `MapLibreStyleEvaluator` fixture built directly from `@maplibre/maplibre-gl-style-spec`
+  (the real package, as a devDependency — not a hand-rolled fake, so the tests exercise the
+  real expression grammar); a headless layer-lifecycle spec for the composite mapping
+  (style-layer order → deck.gl layer order); a manual/visual verification recipe in
+  `test/apps/crs-viewport` reproducing the Fathom hybrid acceptance scenario.
+
+## Decomposition (this spec → one plan)
+
+Two stages, each independently shippable — the plan is organized so a reviewer/implementer can
+stop after Stage 1's tasks and have shipped E1 as originally scoped. Plan:
+`docs/superpowers/plans/2026-07-05-crs-mvt-style-adapter-plan.md`.
+
+Filed as roadmap follow-ups, not part of this plan: binary-mode CRS support (Decisions for
+review #5), `symbol-placement: 'line'` true curved labels / `line-gradient` / `fill-pattern` /
+`raster`/`hillshade`/`heatmap` style layers / glyph-PBF font parity (Stage 2 Non-goals),
+continuous zoom re-evaluation (Decisions for review #3), far-field LOD (Chunk B1, unaffected).
