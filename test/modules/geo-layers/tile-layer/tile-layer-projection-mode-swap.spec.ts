@@ -73,3 +73,58 @@ test('MVTLayer#surviving a CRS -> Mercator viewport change re-creates its tilese
 
   expect(seenErrors).toEqual([]);
 });
+
+// Regression test for the fast-follow above: `Viewport.projectionMode` (viewport.ts) is itself
+// zoom-dependent for a plain `WebMercatorViewport` — WEB_MERCATOR below zoom 12,
+// WEB_MERCATOR_AUTO_OFFSET at/above. `MVTLayer._getTilesetClass()` reads `projectionMode`, but
+// resolves to the *same* class (the default `Tileset2D`) for both WEB_MERCATOR and
+// WEB_MERCATOR_AUTO_OFFSET (it only special-cases the CRS case). Keying tileset invalidation on
+// the raw `projectionMode` value (instead of the resolved class) would therefore needlessly
+// finalize + recreate the tileset -- dropping every cached tile and refetching -- each time a
+// classic Mercator app's zoom crosses 12. Assert the tileset instance (and its cache) survives.
+test('MVTLayer#classic Mercator viewport crossing zoom 11->13 retains its tileset instance', async () => {
+  const seenErrors: Error[] = [];
+  let firstTileset: unknown = null;
+
+  const testCases = [
+    {
+      title: 'zoom 11 (WEB_MERCATOR)',
+      viewport: new WebMercatorViewport({
+        width: 800,
+        height: 600,
+        longitude: -72,
+        latitude: 40,
+        zoom: 11
+      }),
+      props: {
+        data: 'https://example.com/tiles/{z}/{x}/{y}.mvt'
+      },
+      onAfterUpdate: ({layer}: {layer: any}) => {
+        expect(layer.state.tileset).toBeInstanceOf(Tileset2D);
+        expect(layer.state.tileset).not.toBeInstanceOf(MercatorCRSTileset2D);
+        firstTileset = layer.state.tileset;
+      }
+    },
+    {
+      title: 'zoom 13 (WEB_MERCATOR_AUTO_OFFSET): must keep the same tileset instance',
+      viewport: new WebMercatorViewport({
+        width: 800,
+        height: 600,
+        longitude: -72,
+        latitude: 40,
+        zoom: 13
+      }),
+      onAfterUpdate: ({layer}: {layer: any}) => {
+        expect(layer.state.tileset).toBe(firstTileset);
+      }
+    }
+  ];
+
+  await testLayerAsync({
+    Layer: MVTLayer,
+    testCases,
+    onError: err => seenErrors.push(err)
+  });
+
+  expect(seenErrors).toEqual([]);
+});
