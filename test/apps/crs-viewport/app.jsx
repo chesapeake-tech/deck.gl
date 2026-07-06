@@ -9,7 +9,12 @@ import DeckGL from '@deck.gl/react';
 import {COORDINATE_SYSTEM, MapView} from '@deck.gl/core';
 import {normalizeCRS, lngLatToCommon} from '@deck.gl/core/viewports/crs-utils';
 import {BitmapLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer} from '@deck.gl/layers';
-import {TerrainLayer, TileLayer, _WarpedTileLayer as WarpedTileLayer} from '@deck.gl/geo-layers';
+import {
+  MVTLayer,
+  TerrainLayer,
+  TileLayer,
+  _WarpedTileLayer as WarpedTileLayer
+} from '@deck.gl/geo-layers';
 import {SimpleMeshLayer} from '@deck.gl/mesh-layers';
 import {SphereGeometry} from '@luma.gl/engine';
 import proj4 from 'proj4';
@@ -122,6 +127,78 @@ function makeSyntheticTerrainMesh(bounds) {
   };
 }
 
+// Task 4 (Stage 1, E1 plan) verification: a CRS-native (tileMatrixSet-indexed) MVTLayer,
+// layered over the warped Esri imagery basemap. No public UTM 18N vector-tile service exists
+// (same gap as the TerrainLayer demo above), so this synthesizes each tile's already-decoded
+// (lnglat) `Feature[]` content directly via the `fetch` prop override — the same network-free
+// pattern used above — one inset polygon plus one labeled point per tile, built from the same
+// tileMatrixSet cell math the "tile grid" demo uses for its outline, so registration against
+// the graticule/state overlay and the Esri basemap is directly checkable.
+function utmTileCrsBounds(z, x, y) {
+  const {pointOfOrigin, cellSize} = UTM_TMS.tileMatrices[z];
+  const minX = pointOfOrigin[0] + x * cellSize * 512;
+  const maxX = minX + cellSize * 512;
+  const maxY = pointOfOrigin[1] - y * cellSize * 512;
+  const minY = maxY - cellSize * 512;
+  return [minX, minY, maxX, maxY];
+}
+
+function makeSyntheticMvtFeatures(z, x, y) {
+  const [minX, minY, maxX, maxY] = utmTileCrsBounds(z, x, y);
+  const inv = UTM18N.transform.inverse;
+  const insetX = (maxX - minX) * 0.15;
+  const insetY = (maxY - minY) * 0.15;
+  const ring = [
+    [minX + insetX, minY + insetY],
+    [maxX - insetX, minY + insetY],
+    [maxX - insetX, maxY - insetY],
+    [minX + insetX, maxY - insetY],
+    [minX + insetX, minY + insetY]
+  ].map(inv);
+  const center = inv([(minX + maxX) / 2, (minY + maxY) / 2]);
+  return [
+    {
+      type: 'Feature',
+      properties: {class: 'parcel', tile: `${z}/${x}/${y}`},
+      geometry: {type: 'Polygon', coordinates: [ring]}
+    },
+    {
+      type: 'Feature',
+      properties: {name: `tile ${z}/${x}/${y}`},
+      geometry: {type: 'Point', coordinates: center}
+    }
+  ];
+}
+
+function makeUtmMvtLayers() {
+  return [
+    new WarpedTileLayer({
+      id: 'warped-esri-under-mvt',
+      data: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      tileSize: 256,
+      maxZoom: 19
+    }),
+    new MVTLayer({
+      id: 'utm-mvt',
+      // Placeholder template: never fetched over the network, see `fetch` override below.
+      data: 'synthetic://{z}/{x}/{y}',
+      tileMatrixSet: UTM_TMS,
+      fetch: (url, {propName}) => {
+        if (propName !== 'data') return Promise.resolve(null);
+        const [, z, x, y] = /synthetic:\/\/(\d+)\/(\d+)\/(\d+)/.exec(url);
+        return Promise.resolve(makeSyntheticMvtFeatures(Number(z), Number(x), Number(y)));
+      },
+      getFillColor: [30, 200, 120, 140],
+      getLineColor: [10, 120, 60, 255],
+      getPointRadius: 6,
+      pointRadiusMinPixels: 4,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 0, 150]
+    })
+  ];
+}
+
 // Task 3 (Phase 4 plan) verification: a CARTESIAN-positioned mesh, positioned app-side via the
 // CRS's own forward transform (+ Phase 1's common-space normalization, `lngLatToCommon` —
 // equivalently `viewport.projectFlat`). No new deck.gl code is involved; this proves the
@@ -183,7 +260,7 @@ const CONTROLS_STYLE = {
 function App() {
   const [crsName, setCrsName] = useState('UTM 18N');
   const [showTiles, setShowTiles] = useState(true);
-  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain'
+  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain' | 'mvt'
   const [showPitchMesh, setShowPitchMesh] = useState(false);
 
   const tileLayers = [];
@@ -267,6 +344,8 @@ function App() {
             color: [220, 40, 140]
           })
         );
+      } else if (utmBasemap === 'mvt') {
+        tileLayers.push(...makeUtmMvtLayers());
       } else {
         tileLayers.push(
           new WarpedTileLayer({
@@ -354,6 +433,7 @@ function App() {
             <option value="osm">OSM (warped)</option>
             <option value="esri">Esri imagery (warped)</option>
             <option value="terrain">TerrainLayer (CRS-native)</option>
+            <option value="mvt">MVTLayer (CRS-native)</option>
           </select>
         )}
         {crsName === 'UTM 18N' && (

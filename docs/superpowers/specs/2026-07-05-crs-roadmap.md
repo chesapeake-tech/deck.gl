@@ -47,8 +47,10 @@ pipeline recorded in `.superpowers/sdd/progress.md`.
 
 ## Chunk E — deferred features (largest, last)
 
-- **E1. MVT in CRS views** — wgs84-decode route + `MercatorCRSTileset2D` selection; costs the
-  binary fast path. Spec-first.
+- **E1. MVT in CRS views** — wgs84-decode route (generalizing the existing GlobeView path) +
+  `_CRSTileset2D` selection (already generic via `tileMatrixSet`, not `MercatorCRSTileset2D` —
+  that class is Phase 3's raster-only warp mechanism); costs the binary fast path. Shipped —
+  see `docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md`.
 - **E2. Exact CPU reprojection opt-in (Approach B)** — per-layer flag transforming attributes
   through the real projection; exact at any extent. Spec-first.
 
