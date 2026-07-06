@@ -30,6 +30,7 @@ import findIndexBinary from './find-index-binary';
 import {usesFeatureRoute} from './mvt-viewport-mode';
 
 import TileLayer, {TileLayerPickingInfo, TileLayerProps} from '../tile-layer/tile-layer';
+import {MercatorCRSTileset2D} from '../warped-tile-layer/mercator-crs-tileset-2d';
 
 import type {Tileset2DProps, TileLoadProps, GeoBoundingBox} from '../tileset-2d/index';
 import {
@@ -132,14 +133,6 @@ export default class MVTLayer<
     // GlobeView/CRS views don't work well with binary data
     const binary = usesFeatureRoute(this.context.viewport) ? false : this.props.binary;
 
-    if (this.context.viewport.projectionMode === PROJECTION_MODE.CRS && !this.props.tileMatrixSet) {
-      log.warn(
-        `MVTLayer ${this.id}: CRS MapView without \`tileMatrixSet\` is unsupported — tiles ` +
-          'will be requested using the Mercator XYZ scheme, which does not match a CRS-native ' +
-          'source. Set `tileMatrixSet` (see docs/api-reference/geo-layers/mvt-layer.md#crs-views).'
-      )();
-    }
-
     this.setState({
       binary,
       data: null,
@@ -196,6 +189,29 @@ export default class MVTLayer<
     }
 
     this.setState({data, tileJSON});
+  }
+
+  /** The universal, no-`tileMatrixSet` case: a classic Mercator XYZ vector-tile source (the
+   * common real-world shape — e.g. Esri's "Ocean Reference" service) viewed through a CRS
+   * `MapView`. `TileLayer._getTilesetClass()` only promotes to `_CRSTileset2D` when
+   * `tileMatrixSet` is set, so this combination would otherwise fall through to the default
+   * `Tileset2D`, whose implicit Mercator power-of-two quadtree is meaningless for a CRS
+   * viewport's zoom/bounds. Route it through `MercatorCRSTileset2D` instead — the same class
+   * `_WarpedTileLayer` uses to reproject a CRS view into Mercator source space — whose
+   * `getTileMetadata()` lnglat `bbox` feeds the existing wgs84 decode route with no glue code.
+   * An explicit `TilesetClass` override always wins (mirrors `TileLayer`'s own policy for
+   * `tileMatrixSet`). See docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md,
+   * Design item 3. */
+  _getTilesetClass(): typeof Tileset2D {
+    const TilesetClass = super._getTilesetClass();
+    if (
+      TilesetClass === Tileset2D &&
+      !this.props.tileMatrixSet &&
+      this.context.viewport.projectionMode === PROJECTION_MODE.CRS
+    ) {
+      return MercatorCRSTileset2D;
+    }
+    return TilesetClass;
   }
 
   _getTilesetOptions(): Tileset2DProps {
