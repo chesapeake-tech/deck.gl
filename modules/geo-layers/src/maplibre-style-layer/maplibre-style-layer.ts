@@ -18,24 +18,28 @@ import {
 import type {StyleLayer} from './style-layer-mappers';
 import {mapSymbolIconLayer, mapSymbolTextLayer} from './symbol-mappers';
 import {zoomBucket} from './compile-expression';
+import type {CompileCache} from './compile-expression';
 import type {MapLibreStyleLayerProps} from './types';
 
 const SUPPORTED_TYPES = new Set(['fill', 'line', 'fill-extrusion', 'symbol']);
-const warnedUnsupportedIds = new Set<string>();
-const warnedLinePlacementIds = new Set<string>();
 
-function warnUnsupportedOnce(styleLayer: StyleLayer): void {
-  if (warnedUnsupportedIds.has(styleLayer.id)) return;
-  warnedUnsupportedIds.add(styleLayer.id);
+/** Review fix (M2): these warn-once ledgers were previously module-scope `Set`s, shared by
+ * EVERY `MapLibreStyleLayer` instance for the lifetime of the JS module (i.e. the whole page) —
+ * a style layer id warned once by one map/layer instance would never warn again even for a
+ * brand-new, unrelated instance (e.g. a different map in the same app, or the same map
+ * recreated after a style swap reusing an id). Moved to per-instance layer `state` instead. */
+function warnUnsupportedOnce(styleLayer: StyleLayer, warned: Set<string>): void {
+  if (warned.has(styleLayer.id)) return;
+  warned.add(styleLayer.id);
   log.warn(
     `_MapLibreStyleLayer: style layer "${styleLayer.id}" has unsupported type "${styleLayer.type}" ` +
       '(raster/hillshade/heatmap are not implemented in v1) — skipped.'
   )();
 }
 
-function warnLinePlacementOnce(id: string): void {
-  if (warnedLinePlacementIds.has(id)) return;
-  warnedLinePlacementIds.add(id);
+function warnLinePlacementOnce(id: string, warned: Set<string>): void {
+  if (warned.has(id)) return;
+  warned.add(id);
   log.warn(
     `_MapLibreStyleLayer: style layer "${id}" uses symbol-placement:'line' — approximated as a ` +
       'single horizontal label at the line midpoint (no curved along-line placement in v1).'
@@ -83,23 +87,32 @@ function mapOneStyleLayer(
   features: Feature[],
   evaluator: MapLibreStyleLayerProps['evaluator'],
   zoom: number,
-  spriteAtlas: MapLibreStyleLayerProps['spriteAtlas']
+  spriteAtlas: MapLibreStyleLayerProps['spriteAtlas'],
+  warnLinePlacementOnce: (id: string) => void,
+  cache: CompileCache
 ): Layer | null {
   switch (styleLayer.type) {
     case 'fill':
-      return mapFillLayer(styleLayer, features, evaluator, zoom);
+      return mapFillLayer(styleLayer, features, evaluator, zoom, cache);
     case 'line':
-      return mapLineLayer(styleLayer, features, evaluator, zoom);
+      return mapLineLayer(styleLayer, features, evaluator, zoom, cache);
     case 'fill-extrusion':
-      return mapFillExtrusionLayer(styleLayer, features, evaluator, zoom);
+      return mapFillExtrusionLayer(styleLayer, features, evaluator, zoom, cache);
     case 'symbol':
       if (
         (styleLayer as {layout?: {'icon-image'?: unknown}}).layout?.['icon-image'] &&
         spriteAtlas
       ) {
-        return mapSymbolIconLayer(styleLayer, features, evaluator, zoom, spriteAtlas);
+        return mapSymbolIconLayer(styleLayer, features, evaluator, zoom, spriteAtlas, cache);
       }
-      return mapSymbolTextLayer(styleLayer, features, evaluator, zoom, warnLinePlacementOnce);
+      return mapSymbolTextLayer(
+        styleLayer,
+        features,
+        evaluator,
+        zoom,
+        warnLinePlacementOnce,
+        cache
+      );
     default:
       return null;
   }
@@ -143,6 +156,40 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     return changeFlags.somethingChanged;
   }
 
+  /** Review fix (I6): (re)creates the compile cache and warn-once ledgers whenever `style` or
+   * `evaluator` change identity (including first mount) — a stale cache keyed against a
+   * since-replaced evaluator/style would be a correctness bug (compiled closures capturing the
+   * old evaluator), not just a missed optimization, so identity, not deep-equality, is the
+   * right invalidation key: a caller that wants a fresh compile must pass a new object, exactly
+   * mirroring how `updateTriggers` identity already works elsewhere in this adapter. */
+  initializeState(): void {
+    this._ensureState();
+  }
+
+  /** Defensive alongside the real `initializeState()` lifecycle hook: guarantees `this.state`
+   * (and its warn-once ledgers) exist even if called outside the full layer-manager lifecycle
+   * (e.g. a unit test driving `renderLayers()` directly) — cheap, idempotent, and avoids a
+   * crash-on-`undefined` far less informative than "the state got lazily created". */
+  private _ensureState(): void {
+    if (!this.state) {
+      (this as unknown as {state: Record<string, unknown>}).state = {};
+    }
+    if (!this.state.compileCache) this.state.compileCache = new Map();
+    if (!this.state.warnedUnsupportedIds) this.state.warnedUnsupportedIds = new Set<string>();
+    if (!this.state.warnedLinePlacementIds) this.state.warnedLinePlacementIds = new Set<string>();
+  }
+
+  private _getCompileCache(): CompileCache {
+    this._ensureState();
+    const {style, evaluator} = this.props;
+    if (this.state.cacheStyle !== style || this.state.cacheEvaluator !== evaluator) {
+      this.state.compileCache = new Map();
+      this.state.cacheStyle = style;
+      this.state.cacheEvaluator = evaluator;
+    }
+    return this.state.compileCache as CompileCache;
+  }
+
   renderLayers(): LayersList {
     const {style, source, evaluator, spriteAtlas} = this.props;
     // Review fix (C2): fail fast, once, with a clear message if the injected evaluator
@@ -161,22 +208,69 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     }
     const zoom = this.context.viewport.zoom;
     const layers: LayersList = [];
+    // Review fix (I6): compiled once per style+evaluator identity (see `_getCompileCache`), not
+    // once per tile render — passed into every mapper call below and into the per-tile
+    // `renderSubLayers` callback's closure, so a style layer's filter/paint expressions are
+    // parsed a single time no matter how many tiles or zoom-bucket re-renders follow.
+    const compileCache = this._getCompileCache();
+    this._ensureState();
+    const warnedUnsupportedIds = this.state.warnedUnsupportedIds as Set<string>;
+    const warnedLinePlacementIds = this.state.warnedLinePlacementIds as Set<string>;
 
     const allStyleLayers = style.layers as StyleLayer[];
     const backgroundStyleLayer = allStyleLayers.find(l => l.type === 'background');
     if (backgroundStyleLayer) {
-      const backgroundLayer = mapBackgroundLayer(backgroundStyleLayer, evaluator, zoom);
-      if (backgroundLayer) layers.push(backgroundLayer);
+      const backgroundLayer = mapBackgroundLayer(
+        backgroundStyleLayer,
+        evaluator,
+        zoom,
+        undefined,
+        compileCache
+      );
+      if (backgroundLayer) {
+        // Review fix (M1): route the background sublayer through `this.getSubLayerProps` —
+        // namespaces its id under this composite instance's own id (avoiding a collision with
+        // another `MapLibreStyleLayer` instance rendering the same style/background id) and
+        // cascades `opacity`/`visible` (and other composite-level sublayer props) from the
+        // composite's own props onto it, matching how every other `CompositeLayer` in this
+        // codebase threads sublayer props through — the previous code built it as a fully
+        // independent, un-namespaced `GeoJsonLayer`.
+        layers.push(
+          backgroundLayer.clone(
+            this.getSubLayerProps({
+              id: backgroundStyleLayer.id,
+              updateTriggers: backgroundLayer.props.updateTriggers
+            })
+          )
+        );
+      }
     }
 
     const featureStyleLayers = allStyleLayers.filter(l => l.type !== 'background');
+
+    // Review fix (M4): `source` is a caller-supplied, indexed-signature bag of MVTLayer/
+    // TileLayer props (Decisions for review — lets a caller pass through e.g. `fetch`); if it
+    // happened to include its own `id` (or `updateTriggers`, merged explicitly below instead),
+    // spreading it AFTER `this.getSubLayerProps({id: 'source'})` would silently clobber the
+    // properly-namespaced inner MVTLayer id with whatever the caller passed — a real risk since
+    // `source`'s shape is intentionally open-ended. Strip both out of the spread explicitly so
+    // the composite's own namespacing always wins.
+    const {
+      id: _sourceId,
+      updateTriggers: sourceUpdateTriggers,
+      ...restSource
+    } = source as {
+      id?: string;
+      updateTriggers?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
 
     layers.push(
       new MVTLayer(this.getSubLayerProps({id: 'source'}), {
         // Spread (not pick data/tileMatrixSet only) so any other MVTLayer/TileLayer prop the
         // caller sets on `source` (e.g. `fetch`, for a custom/offline loader — see the app
         // verification demo, Task 13) passes through verbatim.
-        ...source,
+        ...restSource,
         // Style-layer mappers (Tasks 10/11) consume plain GeoJSON Feature[] (`f.properties`,
         // `f.geometry`) and fan each tile out into a *list* of mapped layers, one per matching
         // style layer — not the single-GeoJsonLayer-per-tile shape MVTLayer's `binary: true`
@@ -201,7 +295,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // 266-268`) instead of a full `tileset.reloadAll()` — exactly the "value-compared path"
         // the review asked for.
         updateTriggers: {
-          ...((source as {updateTriggers?: Record<string, unknown>}).updateTriggers ?? {}),
+          ...(sourceUpdateTriggers ?? {}),
           renderSubLayers: zoomBucket(zoom)
         },
         renderSubLayers: (tileProps: TileRenderProps) => {
@@ -209,10 +303,18 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           const sublayers: LayersList = [];
           for (const styleLayer of featureStyleLayers) {
             if (!SUPPORTED_TYPES.has(styleLayer.type)) {
-              warnUnsupportedOnce(styleLayer);
+              warnUnsupportedOnce(styleLayer, warnedUnsupportedIds);
               continue;
             }
-            const mapped = mapOneStyleLayer(styleLayer, features, evaluator, zoom, spriteAtlas);
+            const mapped = mapOneStyleLayer(
+              styleLayer,
+              features,
+              evaluator,
+              zoom,
+              spriteAtlas,
+              id => warnLinePlacementOnce(id, warnedLinePlacementIds),
+              compileCache
+            );
             if (mapped) {
               const positioned = applyTilePositioning(mapped, tileProps);
               // TileLayer's default renderSubLayers relies on `props.id` (tile-unique, set by
