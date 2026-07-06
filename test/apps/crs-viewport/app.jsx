@@ -199,6 +199,81 @@ function makeUtmMvtLayers() {
   ];
 }
 
+// Post-review addendum (Finding 2, task-e1s1-fix): the universal, motivating MVT source shape -
+// a classic Mercator-pyramid vector-tile source with NO `tileMatrixSet` (Esri's real "Ocean
+// Reference" point-label service, and most other public MVT endpoints, are exactly this shape;
+// they are not CRS-native/tileMatrixSet-described). Before this fix, MVTLayer without
+// `tileMatrixSet` in a CRS MapView only warned once and requested tiles on a meaningless
+// scheme. `MVTLayer._getTilesetClass()` now auto-selects `MercatorCRSTileset2D` for this
+// combination - the same reprojection `_WarpedTileLayer` already uses to warp Mercator raster
+// basemaps into a CRS view - with no extra prop. As with the CRS-native MVTLayer demo above, no
+// public UTM-area Mercator MVT test service exists, so tile CONTENT is synthetic - but the
+// INDEXING (which z/x/y tiles get requested for this UTM view, and the lnglat bbox each one
+// decodes against) is real `MercatorCRSTileset2D` output, not faked. Content is deliberately
+// tile-LOCAL [0,1] coordinates (not pre-computed lnglat, unlike the CRS-native demo above) so
+// the wgs84 decode route (`transformTileCoordsToWGS84`) actually exercises reprojection against
+// that real bbox, exactly as a real MVTWorkerLoader('local') tile would.
+function osmTile2lngLatDemo(x, y, z) {
+  const n = 2 ** z;
+  const lon = (x / n) * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n)));
+  return [lon, (latRad * 180) / Math.PI];
+}
+
+function makeSyntheticMercatorMvtFeatures(z, x, y) {
+  const inset = 0.15;
+  const ring = [
+    [inset, inset],
+    [1 - inset, inset],
+    [1 - inset, 1 - inset],
+    [inset, 1 - inset],
+    [inset, inset]
+  ];
+  return [
+    {
+      type: 'Feature',
+      properties: {class: 'reference-area', tile: `${z}/${x}/${y}`},
+      geometry: {type: 'Polygon', coordinates: [ring]}
+    },
+    {
+      type: 'Feature',
+      properties: {name: `mercator tile ${z}/${x}/${y}`, corner: osmTile2lngLatDemo(x, y, z)},
+      geometry: {type: 'Point', coordinates: [0.5, 0.5]}
+    }
+  ];
+}
+
+function makeUtmMercatorMvtLayers() {
+  return [
+    new WarpedTileLayer({
+      id: 'warped-esri-under-mercator-mvt',
+      data: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      tileSize: 256,
+      maxZoom: 19
+    }),
+    new MVTLayer({
+      id: 'utm-mercator-mvt',
+      // Placeholder template: never fetched over the network, see `fetch` override below.
+      // Deliberately NO tileMatrixSet: MVTLayer._getTilesetClass() auto-selects
+      // MercatorCRSTileset2D since the view is a CRS MapView and no tileMatrixSet/custom
+      // TilesetClass is set - the fix under verification here.
+      data: 'synthetic-mercator://{z}/{x}/{y}',
+      fetch: (url, {propName}) => {
+        if (propName !== 'data') return Promise.resolve(null);
+        const [, z, x, y] = /synthetic-mercator:\/\/(\d+)\/(\d+)\/(\d+)/.exec(url);
+        return Promise.resolve(makeSyntheticMercatorMvtFeatures(Number(z), Number(x), Number(y)));
+      },
+      getFillColor: [200, 60, 180, 140],
+      getLineColor: [140, 20, 120, 255],
+      getPointRadius: 6,
+      pointRadiusMinPixels: 4,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 0, 150]
+    })
+  ];
+}
+
 // Task 3 (Phase 4 plan) verification: a CARTESIAN-positioned mesh, positioned app-side via the
 // CRS's own forward transform (+ Phase 1's common-space normalization, `lngLatToCommon` —
 // equivalently `viewport.projectFlat`). No new deck.gl code is involved; this proves the
@@ -260,7 +335,7 @@ const CONTROLS_STYLE = {
 function App() {
   const [crsName, setCrsName] = useState('UTM 18N');
   const [showTiles, setShowTiles] = useState(true);
-  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain' | 'mvt'
+  const [utmBasemap, setUtmBasemap] = useState('osm'); // 'grid' | 'osm' | 'esri' | 'terrain' | 'mvt' | 'mvt-mercator'
   const [showPitchMesh, setShowPitchMesh] = useState(false);
 
   const tileLayers = [];
@@ -346,6 +421,8 @@ function App() {
         );
       } else if (utmBasemap === 'mvt') {
         tileLayers.push(...makeUtmMvtLayers());
+      } else if (utmBasemap === 'mvt-mercator') {
+        tileLayers.push(...makeUtmMercatorMvtLayers());
       } else {
         tileLayers.push(
           new WarpedTileLayer({
@@ -433,7 +510,8 @@ function App() {
             <option value="osm">OSM (warped)</option>
             <option value="esri">Esri imagery (warped)</option>
             <option value="terrain">TerrainLayer (CRS-native)</option>
-            <option value="mvt">MVTLayer (CRS-native)</option>
+            <option value="mvt">MVTLayer (CRS-native, tileMatrixSet)</option>
+            <option value="mvt-mercator">MVTLayer (Mercator-pyramid, auto)</option>
           </select>
         )}
         {crsName === 'UTM 18N' && (
