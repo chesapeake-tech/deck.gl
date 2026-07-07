@@ -23,7 +23,7 @@ export type StyleLayer = {
   'source-layer'?: string;
 };
 
-/** Review fix (I5): `layout.visibility: 'none'` (a style-layer-level on/off switch, independent
+/** `layout.visibility: 'none'` (a style-layer-level on/off switch, independent
  * of `filter`) — a real style commonly ships a layer with `visibility: 'none'` to mean "defined
  * but not currently shown" (e.g. toggled by a style-switcher UI outside the adapter's scope).
  * Unhandled, such a layer rendered exactly as if it were visible. */
@@ -31,7 +31,7 @@ export function isStyleLayerVisible(styleLayer: StyleLayer): boolean {
   return styleLayer.layout?.visibility !== 'none';
 }
 
-/** Review fix (I5): `minzoom`/`maxzoom` (style-layer-level, MapLibre semantics: rendered when
+/** `minzoom`/`maxzoom` (style-layer-level, MapLibre semantics: rendered when
  * `minzoom <= zoom < maxzoom`) — a real style relies on these to swap layer styling by zoom
  * band (e.g. a coarse `fill` layer below z10, a detailed one above); unhandled, every style
  * layer rendered at every zoom regardless of its declared range. */
@@ -42,7 +42,7 @@ export function isStyleLayerInZoomRange(styleLayer: StyleLayer, zoom: number): b
   return true;
 }
 
-/** Review fix (I5): `source-layer` scopes a style layer to one named layer inside the vector
+/** `source-layer` scopes a style layer to one named layer inside the vector
  * tile (matched against the MVT loader's own `feature.properties.layerName`,
  * `modules/geo-layers/src/mvt-layer/mvt-layer.ts`'s `getFeatureLayerName` — confirmed against
  * `@loaders.gl/mvt`'s `parse-mvt.js`, which injects the tile's named layer into
@@ -80,7 +80,7 @@ export function filterFeatures(
  * `Color` tuple, folding in a separate opacity multiplier where the style separates `-color` and
  * `-opacity` paint properties.
  *
- * Review fix (I1): the style-spec's `Color` is PREMULTIPLIED by alpha — `rgba(255,0,0,.5)`
+ * The style-spec's `Color` is PREMULTIPLIED by alpha — `rgba(255,0,0,.5)`
  * parses to `{r:.5, g:0, b:0, a:.5}`, not `{r:1, g:0, b:0, a:.5}` (verified above against the
  * real package). Reading `r/g/b` directly (as the previous code did) darkens every
  * semi-transparent color proportionally to its alpha (a 50%-alpha red rendered at half the
@@ -126,7 +126,7 @@ const DEFAULT_COVERING_FEATURE: Feature = {
   }
 };
 
-/** Perf fix (review): `mapBackgroundLayer` runs once per `renderLayers()` call, which runs on
+/** `mapBackgroundLayer` runs once per `renderLayers()` call, which runs on
  * every frame during camera motion — `data: [feature]` previously allocated a fresh wrapping
  * array on every call even when `feature` itself hadn't changed (identical reference, whether
  * the caller-supplied `coveringFeature` — itself now memoized per crs identity, see
@@ -152,7 +152,7 @@ export function mapBackgroundLayer(
   coveringFeature?: Feature,
   cache?: CompileCache
 ): Layer | null {
-  // Review fix (I5): `background` has no source features to run through `filterFeatures`, but
+  // `background` has no source features to run through `filterFeatures`, but
   // still needs the same `visibility`/`minzoom`/`maxzoom` honoring every other style-layer type
   // gets.
   if (!isStyleLayerVisible(styleLayer) || !isStyleLayerInZoomRange(styleLayer, zoom)) {
@@ -258,7 +258,7 @@ export function mapLineLayer(
     evaluator,
     cache
   );
-  // Review fix (Round 8 finding, fork feedback #4): no hardcoded `length` here — a real style's
+  // No hardcoded `length` here — a real style's
   // `line-dasharray` zoom function can mix stop lengths (CARTO: `[1]` at z5, `[2, 2]` at z7);
   // `compileExpression` equalizes them (cyclic repeat to their LCM) and reports the resulting
   // length itself, rather than this call site assuming every style always uses 2-element stops.
@@ -276,7 +276,7 @@ export function mapLineLayer(
     data: matched,
     stroked: true,
     filled: false,
-    // Review fix (I3a): MapLibre's `line-width` is always CSS pixels; GeoJsonLayer/PathLayer
+    // MapLibre's `line-width` is always CSS pixels; GeoJsonLayer/PathLayer
     // default `lineWidthUnits` to 'meters', which scales the stroke with zoom/latitude instead
     // of keeping it a constant screen-space width.
     lineWidthUnits: 'pixels',

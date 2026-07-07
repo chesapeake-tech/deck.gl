@@ -131,8 +131,8 @@ same length at runtime, which `PathStyleExtension`'s fixed-size-2 `getDashArray`
 Not implemented in v1 (style layers of these types/features are skipped, with a console warning
 naming the offending style-layer `id`): `raster`, `raster-particle`, `hillshade`, `heatmap` style
 layers; `line-gradient`; `fill-pattern`; true curved `symbol-placement: 'line'` labels (a single
-horizontal label at the line's midpoint is substituted instead — see the design doc's Decisions
-for review #4); glyph-PBF font parity (`text-font` is approximated by one browser `fontFamily`);
+horizontal label at the line's midpoint is substituted instead); glyph-PBF font parity
+(`text-font` is approximated by one browser `fontFamily`);
 the `["format", ...]` expression (rich multi-run text — throws a clear compile-time error rather
 than silently rendering something wrong, since its result isn't a plain string).
 

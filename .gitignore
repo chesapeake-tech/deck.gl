@@ -29,6 +29,7 @@ yarn-error.log
 package-lock.json
 
 .claude/
+.superpowers/
 .vscode/
 .project
 .idea
