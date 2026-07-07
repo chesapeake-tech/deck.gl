@@ -175,20 +175,32 @@ const EPSG_4326: CRSDefinition = {
   units: 'degrees'
 };
 
-export function normalizeCRS(crs: CRSDefinition | string): NormalizedCRS {
-  let definition: CRSDefinition;
-  if (typeof crs === 'string') {
-    if (crs === 'EPSG:4326') {
-      definition = EPSG_4326;
-    } else {
-      throw new Error(
-        `Unknown CRS: ${crs}. Only 'EPSG:4326' is built in; pass a CRSDefinition with a transform for other CRSs.`
-      );
-    }
-  } else {
-    definition = crs;
-  }
+/** Per-input-object memoization cache for `normalizeCRS`, keyed on the exact user-supplied
+ * `CRSDefinition` object identity (a `WeakMap`, not `crs.code` — two different objects with
+ * the same code must NOT share a cache entry, since they may not actually be the same CRS;
+ * see the "two distinct object literals ... return different references" test in
+ * crs-utils.node.spec.ts). Its counterpart for string CRS codes (below) uses a plain `Map`,
+ * since strings can't be WeakMap keys but are inherently interned/stable, so there's no
+ * garbage-collection concern.
+ *
+ * `CRSViewport`'s constructor calls `normalizeCRS(opts.crs)` unconditionally, and
+ * `ViewManager` reconstructs viewports on every viewState change - so without this, an app
+ * that (per docs guidance) memoizes its own `crs`/`CRSDefinition` object still got a brand
+ * new `NormalizedCRS` every frame. That broke the object-identity assumption two downstream
+ * caches key on: `getCRSJacobian`/`getCRSMetersJacobian`/`getCRSHessian`'s per-(crs, origin)
+ * `WeakMap` caches below, and `backgroundCoveringFeature`'s per-crs `WeakMap` cache
+ * (modules/geo-layers/src/maplibre-style-layer/background-coverage.ts) - both reset every
+ * construction instead of persisting across frames. Memoizing here, at the source, restores
+ * cross-frame reuse for all of them: same input object/code in -> the exact same
+ * `NormalizedCRS` reference out, so those caches hit again. A genuinely different `crs`
+ * object (even with identical contents) still correctly produces a fresh `NormalizedCRS` and
+ * thus fresh downstream cache entries. */
+const definitionCRSCache = new WeakMap<CRSDefinition, NormalizedCRS>();
+const stringCRSCache = new Map<string, NormalizedCRS>();
 
+/** The actual normalization work (extent derivation, round-trip validation) - run exactly
+ * once per cache miss by `normalizeCRS`, which wraps this with memoization. */
+function computeNormalizedCRS(definition: CRSDefinition): NormalizedCRS {
   const {code, transform, extent: explicitExtent, extentGeographic, units = 'meters'} = definition;
   if (explicitExtent && extentGeographic) {
     log.warn(
@@ -215,6 +227,31 @@ export function normalizeCRS(crs: CRSDefinition | string): NormalizedCRS {
     throw new Error(`CRS ${code}: transform failed to round-trip the extent center`);
   }
 
+  return normalized;
+}
+
+export function normalizeCRS(crs: CRSDefinition | string): NormalizedCRS {
+  if (typeof crs === 'string') {
+    const cached = stringCRSCache.get(crs);
+    if (cached) {
+      return cached;
+    }
+    if (crs !== 'EPSG:4326') {
+      throw new Error(
+        `Unknown CRS: ${crs}. Only 'EPSG:4326' is built in; pass a CRSDefinition with a transform for other CRSs.`
+      );
+    }
+    const normalized = computeNormalizedCRS(EPSG_4326);
+    stringCRSCache.set(crs, normalized);
+    return normalized;
+  }
+
+  const cached = definitionCRSCache.get(crs);
+  if (cached) {
+    return cached;
+  }
+  const normalized = computeNormalizedCRS(crs);
+  definitionCRSCache.set(crs, normalized);
   return normalized;
 }
 

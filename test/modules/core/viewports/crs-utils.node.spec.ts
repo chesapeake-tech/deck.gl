@@ -162,6 +162,37 @@ test('normalizeCRS#neither extent nor extentGeographic throws', () => {
   expect(() => normalizeCRS(definitionWithoutExtent)).toThrow(/extent/);
 });
 
+// --- normalizeCRS identity memoization --------------------------------------------------
+//
+// CRSViewport's constructor calls normalizeCRS(opts.crs) on every construction, and
+// ViewManager rebuilds viewports on every viewState change - so an app that memoizes its
+// own CRSDefinition object (per docs guidance) still got a BRAND NEW NormalizedCRS every
+// frame, resetting the WeakMap-keyed Jacobian/Hessian/background-feature caches downstream.
+// normalizeCRS is now memoized at the source: same input object/code -> same output
+// reference, so those downstream caches persist across viewport reconstructions.
+
+test('normalizeCRS#same crs object passed twice returns the same NormalizedCRS reference', () => {
+  const first = normalizeCRS(UTM18N);
+  const second = normalizeCRS(UTM18N);
+  expect(second).toBe(first);
+});
+
+test('normalizeCRS#two distinct object literals with identical contents (even identical code) return different NormalizedCRS references', () => {
+  const a: CRSDefinition = {...UTM18N};
+  const b: CRSDefinition = {...UTM18N};
+  const normA = normalizeCRS(a);
+  const normB = normalizeCRS(b);
+  expect(normB).not.toBe(normA);
+  // Still numerically/structurally equal - a cache miss, not a behavior change.
+  expect(normB).toEqual(normA);
+});
+
+test('normalizeCRS#EPSG:4326 string code returns the same NormalizedCRS reference across calls', () => {
+  const first = normalizeCRS('EPSG:4326');
+  const second = normalizeCRS('EPSG:4326');
+  expect(second).toBe(first);
+});
+
 test('lngLatToCommon#EPSG:4326', () => {
   const crs = normalizeCRS('EPSG:4326');
   expect(lngLatToCommon(crs, [0, 0])).toEqual([256, 128]);
@@ -479,11 +510,14 @@ test('getCRSJacobian#memoization: cache hit is bit-identical to a fresh call', (
   const first = getCRSJacobian(crs, origin);
   const second = getCRSJacobian(crs, origin);
   expect(second).toEqual(first);
-  // A fresh, independently-normalized crs object (same definition) must not share the
-  // first crs's cache entry, but must still agree numerically (pure function of origin).
+  // normalizeCRS is itself memoized on the input object's identity (see the
+  // "normalizeCRS identity memoization" tests above), so calling it again with the exact
+  // same UTM18N object reference returns the SAME NormalizedCRS object, not a fresh one -
+  // this is the same crs's Jacobian cache entry, so the result is === (not just ==) equal.
   const crsAgain = normalizeCRS(UTM18N);
+  expect(crsAgain).toBe(crs);
   const third = getCRSJacobian(crsAgain, origin);
-  expect(third).toEqual(first);
+  expect(third).toBe(first);
 });
 
 test('getCRSHessian#memoization: cache hit is bit-identical to a fresh call', () => {
