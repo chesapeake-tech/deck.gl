@@ -77,10 +77,21 @@ function densifyGeographicBoundary(
 ): [number, number][] {
   const [west, south, east, north] = extentGeographic;
   const n = EXTENT_GEOGRAPHIC_SAMPLES;
+  // Hardening (review item 6c): `west > east` means an antimeridian-crossing bbox (e.g.
+  // `[170, ..., -170, ...]`, the narrow strip straddling +/-180 -- NOT the ~340-degree strip
+  // the other way around, which is what naively interpolating `west + t * (east - west)` would
+  // sweep through instead). Interpolate through `east + 360` (the short way, through the
+  // antimeridian) and wrap samples back into [-180, 180] before returning them, so
+  // `transform.forward` always receives valid WGS84 degrees.
+  const crossesAntimeridian = west > east;
+  const eastForInterpolation = crossesAntimeridian ? east + 360 : east;
   const boundary: [number, number][] = [];
   for (let i = 0; i < n; i++) {
     const t = i / (n - 1);
-    const lng = west + t * (east - west);
+    let lng = west + t * (eastForInterpolation - west);
+    if (crossesAntimeridian && lng > 180) {
+      lng -= 360;
+    }
     const lat = south + t * (north - south);
     boundary.push([lng, north]); // top edge
     boundary.push([lng, south]); // bottom edge
@@ -131,6 +142,19 @@ function deriveExtentFromGeographic(
         `when transformed with transform.forward - the CRS's domain likely does not cover this ` +
         `geographic bbox`
     );
+  }
+  // Hardening (review item 6d): fewer than 4 finite samples already throws (above) - the CRS
+  // clearly doesn't cover the requested bbox at all. This case is milder but still worth
+  // flagging: MOST (but not all) samples non-finite means the derived extent is extrapolated
+  // from a small, possibly unrepresentative minority of the requested boundary (e.g. a bbox
+  // that only marginally overlaps the CRS's actual domain). Kept permissive (still succeeds,
+  // using whatever finite samples are available - unchanged behavior) but with a diagnostic.
+  if (finiteCount < boundary.length / 2) {
+    log.warn(
+      `CRS ${code}: extentGeographic [${extentGeographic}] produced only ${finiteCount}/${boundary.length} ` +
+        `finite samples (${((100 * finiteCount) / boundary.length).toFixed(1)}%) when transformed ` +
+        `with transform.forward - the derived extent may not represent the full requested bbox`
+    )();
   }
   if (!(maxX > minX) || !(maxY > minY)) {
     throw new Error(
@@ -337,7 +361,13 @@ export function getCRSMetersJacobian(
     // Reuses getCRSJacobian's own (crs, origin) memoization - a cache hit here costs no
     // extra proj-wasm calls even on a cache miss for this function.
     const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
-    const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((lnglat[1] * Math.PI) / 180));
+    // Hardening (review item 6b): uncapped, `cos(lat)` approaches 0 (and this division blows
+    // up) as `|lat|` approaches 90 - mirroring the exact failure mode `map-controller.ts`'s own
+    // `lngLatToWorld` already guards against for a different computation (see its
+    // `Math.abs(lat) > 90` clamp). Clamping `|lat|` to <= 89.9 before `cos()` keeps the result
+    // bounded near the poles instead of diverging.
+    const clampedLat = Math.min(Math.max(lnglat[1], -89.9), 89.9);
+    const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((clampedLat * Math.PI) / 180));
     const degLatPerMeterNorth = 1 / METERS_PER_DEGREE;
     return [
       dXdLng * degLngPerMeterEast,
@@ -446,7 +476,11 @@ function getUnitsPerMeter(jacobian: [number, number, number, number]): number {
 
 /** Clamp a lnglat position so that its projection lies inside the CRS extent.
  * Works in CRS space: project, clamp XY to the extent, unproject. If the forward
- * transform is not finite at the input, falls back to the extent center. */
+ * transform is not finite at the input, falls back to the extent center. If the final
+ * `inverse()` of the clamped position is ALSO non-finite (review item 6a - a CRS whose inverse
+ * happens to be undefined at some point strictly inside its own declared `extent`, e.g. singular
+ * at the extent's edges), falls back to `inverse()` of the extent center instead - `normalizeCRS`
+ * already validates that round-trips, so it is always a safe, finite result. */
 export function clampLngLatToCRSExtent(
   crs: NormalizedCRS,
   lnglat: [number, number]
@@ -461,7 +495,11 @@ export function clampLngLatToCRSExtent(
   if (clampedX === xy[0] && clampedY === xy[1]) {
     return lnglat;
   }
-  return crs.transform.inverse([clampedX, clampedY]);
+  const inverted = crs.transform.inverse([clampedX, clampedY]);
+  if (isFinite2(inverted)) {
+    return inverted;
+  }
+  return crs.transform.inverse([(minX + maxX) / 2, (minY + maxY) / 2]);
 }
 
 /** A proj4-style converter: proj4's own `Converter` (`.forward`/`.inverse`) or

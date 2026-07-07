@@ -6,6 +6,7 @@ import {test, expect} from 'vitest';
 import {clamp} from '@math.gl/core';
 import {lngLatToWorld as _lngLatToWorld, worldToLngLat} from '@math.gl/web-mercator';
 import {MapController, WebMercatorViewport, _CRSViewport as CRSViewport} from '@deck.gl/core';
+import {resolveNonFiniteAxis} from '@deck.gl/core/controllers/map-controller';
 import {UTM18N} from '../viewports/crs-fixtures';
 
 const MapState = new MapController({} as any).ControllerState;
@@ -286,4 +287,23 @@ test('D1 CRS maxBounds — known-answer region clamp in UTM 18N', () => {
   expect(insideProps.zoom).toBe(10);
   expect(insideProps.longitude).toBe(-72);
   expect(insideProps.latitude).toBe(40);
+});
+
+// --- CRS: resolveNonFiniteAxis NaN handling (review item 6e) --------------------------
+
+// `resolveNonFiniteAxis` treats every non-finite input the same way (`Number.isFinite(value)`
+// is false for NaN too), resolving to the CRS extent's own min/max edge based on
+// `value < 0` -- a sensible default for +/-Infinity (the library's own default `maxBounds`
+// spans longitude to +/-Infinity, and a signed infinity has a clear "which edge" answer), but
+// NOT for NaN: `NaN < 0` is always `false`, so NaN silently resolved to `maxEdge` regardless of
+// which corner (min or max) it came from -- an arbitrary, misleading bias for what is really
+// "no meaningful value at all", rather than "unconstrained in this direction" (`undefined`,
+// which falls through to the real per-axis projection a few lines below).
+test('resolveNonFiniteAxis#NaN resolves to undefined (unconstrained), not maxEdge', () => {
+  expect(resolveNonFiniteAxis(NaN, -100, 100)).toBeUndefined();
+  // Unaffected: signed infinities still resolve to their directional edge.
+  expect(resolveNonFiniteAxis(-Infinity, -100, 100)).toBe(-100);
+  expect(resolveNonFiniteAxis(Infinity, -100, 100)).toBe(100);
+  // Unaffected: a finite value needs a real projection (also undefined), same as before.
+  expect(resolveNonFiniteAxis(5, -100, 100)).toBeUndefined();
 });

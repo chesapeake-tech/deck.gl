@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {test, expect} from 'vitest';
+import {test, expect, vi} from 'vitest';
 import {Proj4Projection} from '@math.gl/proj4';
+import {log} from '@deck.gl/core';
 import {
   normalizeCRS,
   lngLatToCommon,
@@ -104,6 +105,33 @@ test('normalizeCRS#extentGeographic tolerates a forward that NaNs on part of the
   };
   const crs = normalizeCRS(partialCRS);
   expect(crs.extent).toEqual([-10000, 0, 10000, 60000]);
+});
+
+// Hardening (review item 6c): `densifyGeographicBoundary` interpolated `lng = west + t * (east
+// - west)` unconditionally -- for an antimeridian-crossing bbox (`west > east`, e.g. `[170, ...,
+// -170, ...]`, meaning "the 20-degree-wide strip around +/-180", NOT the ~340-degree strip the
+// other way around) this interpolates the LONG way through longitude 0 instead of the short way
+// through +/-180. Using a `forward` that is finite EVERYWHERE (`[lng * 1000, lat * 1000]`, no
+// domain restriction, so `normalizeCRS`'s own round-trip validation is unaffected regardless of
+// where the derived extent's center lands) still makes this observable via the derived extent's
+// span: a west/east-edge-only bbox tops out at +/-170000 (`west`/`east` themselves); reaching
+// all the way to +/-180000 requires a top/bottom-edge sample that actually swept through the
+// antimeridian (up to +180, wrapping to -180 and on to -170) -- the wrong-direction (through-0)
+// interpolation never produces a sample outside [-170, 170] and so never exceeds +/-170000.
+test('normalizeCRS#extentGeographic handles an antimeridian-crossing bbox (west > east) by interpolating through +/-180, not through 0', () => {
+  const antimeridianCRS: CRSDefinition = {
+    code: 'TEST:ANTIMERIDIAN',
+    transform: {
+      forward: ([lng, lat]) => [lng * 1000, lat * 1000],
+      inverse: ([x, y]) => [x / 1000, y / 1000]
+    },
+    // west (170) > east (-170): the 20-degree-wide strip straddling the antimeridian.
+    extentGeographic: [170, -1, -170, 1],
+    units: 'meters'
+  };
+  const crs = normalizeCRS(antimeridianCRS);
+  expect(crs.extent[0]).toBeLessThan(-175000);
+  expect(crs.extent[2]).toBeGreaterThan(175000);
 });
 
 test('normalizeCRS#extentGeographic throws on a degenerate derived extent', () => {
@@ -559,4 +587,118 @@ test('getCRSJacobian/getCRSHessian/getCRSMetersJacobian#memoization: many distin
   const lastOrigin = [-75 + (1999 % 200) * 0.01, (1999 % 50) * 0.1];
   const jacobian = getCRSJacobian(crs, lastOrigin);
   expect(jacobian.every(Number.isFinite)).toBe(true);
+});
+
+// Hardening (review item 6a): `clampLngLatToCRSExtent` clamps the FORWARD-projected xy into
+// `crs.extent`, then calls `transform.inverse` once on the clamped xy and returns it directly --
+// with no check that the inverse itself succeeded. A CRS whose `inverse` is only well-defined
+// near the extent center (plausible for a projection singular/undefined at its own edges) could
+// return a non-finite lnglat for an out-of-domain input, silently propagating NaN into the
+// caller (e.g. `CRSViewport`'s own view-center clamp, which relies on this never returning
+// non-finite). Falls back to `transform.inverse` of the extent center, which `normalizeCRS`
+// already validates is always finite.
+test('clampLngLatToCRSExtent#a non-finite inverse() at the clamped position falls back to the inverse of the extent center', () => {
+  const restrictedInverseCRS: CRSDefinition = {
+    code: 'TEST:INVERSE_RESTRICTED',
+    transform: {
+      forward: ([lng, lat]) => [lng * 1000, lat * 1000],
+      inverse: ([x, y]) =>
+        Math.abs(x) > 5000 || Math.abs(y) > 5000 ? [NaN, NaN] : [x / 1000, y / 1000]
+    },
+    extent: [-10000, -10000, 10000, 10000],
+    units: 'meters'
+  };
+  const crs = normalizeCRS(restrictedInverseCRS);
+
+  // forward([50, 50]) = [50000, 50000], clamped into the extent to [10000, 10000] -- outside
+  // the inverse's [-5000, 5000] domain, so `transform.inverse([10000, 10000])` is [NaN, NaN].
+  const result = clampLngLatToCRSExtent(crs, [50, 50]);
+  expect(Number.isFinite(result[0])).toBe(true);
+  expect(Number.isFinite(result[1])).toBe(true);
+  // The extent center is [0, 0] in xy -> inverse([0, 0]) = [0, 0] in lnglat.
+  expect(result[0]).toBeCloseTo(0, 6);
+  expect(result[1]).toBeCloseTo(0, 6);
+});
+
+// Hardening (review item 6b): `getCRSMetersJacobian` divides by `cos(lat)` to convert a
+// degrees-based Jacobian to a meters-based one -- uncapped, `cos(lat)` approaches 0 (and the
+// division blows up) as `|lat|` approaches 90, mirroring the exact failure mode
+// `map-controller.ts`'s own `lngLatToWorld` already guards against for a different computation
+// (see its `Math.abs(lat) > 90` clamp). Clamping `|lat|` to <= 89.9 before `cos()` keeps the
+// result bounded near the poles instead of diverging.
+test('getCRSMetersJacobian#clamps |lat| to <=89.9 before cos(), stays bounded near the poles', () => {
+  const identityCRS: CRSDefinition = {
+    code: 'TEST:IDENTITY',
+    transform: {
+      forward: ([lng, lat]) => [lng, lat],
+      inverse: ([x, y]) => [x, y]
+    },
+    extent: [-180, -90, 180, 90],
+    units: 'degrees'
+  };
+  const crs = normalizeCRS(identityCRS);
+  const jacobian = getCRSMetersJacobian(crs, [-75, 90]);
+  expect(jacobian.every(Number.isFinite)).toBe(true);
+  // Without the clamp, `cos(90deg)` (~6e-17 in double precision, not exactly 0) drives the
+  // "east" column past 1e10; with the clamp (cos(89.9deg) ~ 0.001745), it stays of order
+  // 1e-2 to 1e0 -- well under this bound either way for this identity CRS.
+  expect(Math.max(...jacobian.map(Math.abs))).toBeLessThan(1);
+});
+
+// Hardening (review item 6d): `deriveExtentFromGeographic` already throws when fewer than 4 of
+// the densified boundary samples are finite (the CRS's domain clearly doesn't cover the
+// requested bbox at all), but silently proceeds with NO diagnostic whenever MOST (but not all)
+// samples are non-finite -- e.g. a bbox that only marginally overlaps the CRS's actual domain,
+// producing an extent extrapolated from a small, possibly unrepresentative minority of the
+// requested boundary. Keeps the existing permissive behavior (still succeeds), but warns,
+// naming the CRS and the finite fraction, when finiteCount is below half the samples.
+test('normalizeCRS#extentGeographic warns (but still succeeds) when fewer than half the boundary samples are finite', () => {
+  const mostlyRestrictedCRS: CRSDefinition = {
+    code: 'TEST:MOSTLY_RESTRICTED',
+    transform: {
+      forward: ([lng, lat]) => (lat <= 5 ? [lng * 1000, lat * 1000] : [NaN, NaN]),
+      inverse: ([x, y]) => [x / 1000, y / 1000]
+    },
+    // south=-10 (finite, below the lat<=5 threshold), north=90 (always non-finite); the
+    // left/right edges sweep lat from -10 to 90, finite only for their first ~15% (see the
+    // finiteCount arithmetic in this test's comment below).
+    extentGeographic: [-10, -10, 10, 90],
+    units: 'meters'
+  };
+  const warnSpy = vi.spyOn(log, 'warn');
+  try {
+    // 32 total boundary samples (EXTENT_GEOGRAPHIC_SAMPLES=8 per edge x 4 edges): the north
+    // (lat=90) edge is entirely non-finite (8), the south (lat=-10) edge is entirely finite
+    // (8), and each of the east/west edges (lat sweeping -10..90) is finite only for its first
+    // 2 samples (lat <= 5) -- 12 finite of 32 total, well under half.
+    const crs = normalizeCRS(mostlyRestrictedCRS);
+    expect(Number.isFinite(crs.extent[0] + crs.extent[1] + crs.extent[2] + crs.extent[3])).toBe(
+      true
+    );
+    expect(warnSpy).toHaveBeenCalled();
+    const warnedMessage = warnSpy.mock.calls.map(call => String(call[0])).join('\n');
+    expect(warnedMessage).toContain('TEST:MOSTLY_RESTRICTED');
+  } finally {
+    warnSpy.mockRestore();
+  }
+});
+
+// A CRS whose domain genuinely covers most of the requested bbox must NOT warn -- only the
+// below-half-finite case should.
+test('normalizeCRS#extentGeographic does not warn when most boundary samples are finite', () => {
+  const warnSpy = vi.spyOn(log, 'warn');
+  try {
+    normalizeCRS({
+      code: 'TEST:MOSTLY_FINITE',
+      transform: {
+        forward: ([lng, lat]) => [lng * 1000, lat * 1000],
+        inverse: ([x, y]) => [x / 1000, y / 1000]
+      },
+      extentGeographic: [-10, -10, 10, 10],
+      units: 'meters'
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  } finally {
+    warnSpy.mockRestore();
+  }
 });
