@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {Layer, color, project32, picking, gouraudMaterial} from '@deck.gl/core';
+import {Layer, color, project32, picking, gouraudMaterial, PROJECTION_MODE} from '@deck.gl/core';
 import {Model, Geometry} from '@luma.gl/engine';
 
 // Polygon geometry generation is managed by the polygon tesselator
 import PolygonTesselator from './polygon-tesselator';
+import {getPolygonTesselatorPreproject} from './crs-affine-preproject';
 
 import {solidPolygonUniforms, SolidPolygonProps} from './solid-polygon-layer-uniforms';
 import vsTop from './solid-polygon-layer-vertex-top.glsl';
@@ -171,15 +172,24 @@ export default class SolidPolygonLayer<DataT = any, ExtraPropsT extends {} = {}>
       coordinateSystem = 'lnglat';
     }
 
-    let preproject: ((xy: number[]) => number[]) | undefined;
-
-    if (coordinateSystem === 'lnglat') {
-      if (_full3d) {
-        preproject = viewport.projectPosition.bind(viewport);
-      } else {
-        preproject = viewport.projectFlat.bind(viewport);
-      }
-    }
+    // In a CRS view, `viewport.projectFlat` calls `crs.transform.forward` (proj-wasm) -
+    // calling it once per polygon vertex during triangulation is the dominant CRS-view
+    // CPU cost for fill/polygon basemap layers (see Round 15 profiling). Triangulation
+    // only needs a projection that preserves each polygon's local winding/monotonicity,
+    // not metric exactness, and the vertex shader only ever renders CRS LNGLAT
+    // positions via the same local affine+quadratic (Jacobian/Hessian) approximation
+    // anyway (project.glsl.ts) - so `getPolygonTesselatorPreproject` uses that
+    // approximation here too (evaluated once at the view center) instead of calling
+    // proj-wasm per vertex, for every other case (Web Mercator, Globe, full3d) it
+    // returns exactly what this used to inline here. See crs-affine-preproject.ts for
+    // the full correctness rationale and its caveat for very large (near-continental)
+    // polygons.
+    const preproject = getPolygonTesselatorPreproject(
+      viewport,
+      coordinateSystem,
+      Boolean(_full3d),
+      PROJECTION_MODE.CRS
+    );
 
     this.setState({
       numInstances: 0,
