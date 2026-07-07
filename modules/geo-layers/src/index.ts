@@ -58,3 +58,4 @@ export {MapLibreStyleLayer as _MapLibreStyleLayer} from './maplibre-style-layer/
 export type {MapLibreStyleLayerProps as _MapLibreStyleLayerProps} from './maplibre-style-layer/types';
 export {fetchSpriteAtlas as _fetchMapLibreSpriteAtlas} from './maplibre-style-layer/sprite-fetch';
 export type {FetchSpriteAtlasOptions as _FetchMapLibreSpriteAtlasOptions} from './maplibre-style-layer/sprite-fetch';
+export {mercatorEquivalentZoom as _mercatorEquivalentZoom} from './maplibre-style-layer/style-eval-zoom';
