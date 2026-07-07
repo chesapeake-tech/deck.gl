@@ -40,6 +40,42 @@ test('mapBackgroundLayer#produces a SolidPolygonLayer-backed layer with backgrou
   expect(layer).not.toBeNull();
 });
 
+// Perf fix (review): `mapBackgroundLayer` is called once per `renderLayers()`, which runs on
+// every frame during camera motion -- `data: [feature]` previously allocated a fresh
+// wrapping array every call even when `feature` (the covering shape, whether the caller-
+// supplied `coveringFeature` or this module's own default) had not changed, propagating into
+// `GeoJsonLayer`'s `data` prop as a changed reference and forcing a full re-tessellation on
+// every frame regardless.
+test('mapBackgroundLayer#data array is memoized per coveringFeature identity (same reference across calls)', () => {
+  const styleLayer = {id: 'bg', type: 'background', paint: {'background-color': '#e0e0e0'}};
+  const coveringFeature = {
+    type: 'Feature' as const,
+    properties: {},
+    geometry: {
+      type: 'Polygon' as const,
+      coordinates: [
+        [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 0]
+        ]
+      ]
+    }
+  };
+
+  const layer1 = mapBackgroundLayer(styleLayer, evaluator, 10, coveringFeature)!;
+  const layer2 = mapBackgroundLayer(styleLayer, evaluator, 11, coveringFeature)!;
+  expect(layer2.props.data).toBe(layer1.props.data);
+});
+
+test('mapBackgroundLayer#default (Mercator, no coveringFeature) data array is also memoized across calls', () => {
+  const styleLayer = {id: 'bg', type: 'background', paint: {'background-color': '#e0e0e0'}};
+  const layer1 = mapBackgroundLayer(styleLayer, evaluator, 10)!;
+  const layer2 = mapBackgroundLayer(styleLayer, evaluator, 11)!;
+  expect(layer2.props.data).toBe(layer1.props.data);
+});
+
 test('mapFillLayer#filters, colors via fill-color, null when nothing matches', () => {
   const styleLayer = {
     id: 'parks',
