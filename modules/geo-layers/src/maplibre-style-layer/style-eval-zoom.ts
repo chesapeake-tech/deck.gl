@@ -13,7 +13,7 @@ import {unitsPerMeter} from '@math.gl/web-mercator';
  * much smaller extent than Web Mercator's whole world (e.g. a single UTM zone) reaches the same
  * zoom NUMBER at a far more zoomed-in ground scale -- concretely, EPSG:32610 (UTM zone 10N) at San
  * Francisco's latitude sits ~5.56 levels below the Mercator-equivalent zoom for the same ground
- * resolution (deck.gl fork Round 8 integration finding). Style layers author `minzoom`/`maxzoom`
+ * resolution. Style layers author `minzoom`/`maxzoom`
  * and zoom expressions against the Mercator pyramid's own zoom numbering (MapLibre/Mapbox tile
  * services are Mercator-pyramid services), so evaluating them at the raw CRS zoom silently hides
  * every minzoom-gated layer -- most visibly labels, which are almost always minzoom-gated.

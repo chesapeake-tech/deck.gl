@@ -75,7 +75,7 @@ function projectMaxBoundsCorner(viewport: Viewport | null, lnglat: number[]): [n
  * (see {@link projectMaxBoundsCorner}); `undefined` means the axis needs a real
  * projection instead.
  *
- * Hardening (review item 6e): `NaN` is non-finite too, but unlike a signed infinity (which has
+ * `NaN` is non-finite too, but unlike a signed infinity (which has
  * a clear "which edge" answer - the library's own default `maxBounds` spans longitude to
  * `+/-Infinity`), NaN carries no directional information at all. `NaN < 0` is always `false`,
  * so treating it the same as a finite-sign check silently resolved every NaN to `maxEdge`
@@ -575,13 +575,13 @@ export class MapState extends ViewState<MapState, MapStateProps, MapStateInterna
 
     // Built once (only when needed) and shared with `_constrainZoom` below: for a
     // CRSViewport this carries the exact transform + extent that generalizes the
-    // maxBounds/zoom-fit math beyond Web Mercator (D1). `null` when there's no maxBounds
+    // maxBounds/zoom-fit math beyond Web Mercator. `null` when there's no maxBounds
     // to project, or when this `MapState` was constructed without a `makeViewport` (a
     // supported lower-level usage, e.g. `new MapState(props)` in tests, that never
-    // needed one pre-D1 either) — `projectMaxBoundsCorner`/`unprojectCommonPoint` treat a
+    // needed one either) — `projectMaxBoundsCorner`/`unprojectCommonPoint` treat a
     // `null` viewport as "not a CRSViewport" and fall back to the untouched Mercator math,
-    // exactly the pre-D1 behavior. Only the CRS transform + extent are read from it, so
-    // building it before the zoom is settled is fine.
+    // exactly the plain Web Mercator behavior. Only the CRS transform + extent are read
+    // from it, so building it before the zoom is settled is fine.
     const zoomViewport = maxBounds ? this._tryMakeViewport(props) : null;
 
     const constrainedZoom = this._constrainZoom(props.zoom, props, zoomViewport);

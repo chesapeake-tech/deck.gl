@@ -33,7 +33,7 @@ const SUPPORTED_TYPES = new Set(['fill', 'line', 'fill-extrusion', 'symbol']);
  * ever engages for the leak scenarios `onTileUnload` alone doesn't cover, not ordinary panning. */
 const MAX_SUB_LAYER_CACHE_TILES = 500;
 
-/** Review fix (M2): these warn-once ledgers were previously module-scope `Set`s, shared by
+/** These warn-once ledgers were previously module-scope `Set`s, shared by
  * EVERY `MapLibreStyleLayer` instance for the lifetime of the JS module (i.e. the whole page) —
  * a style layer id warned once by one map/layer instance would never warn again even for a
  * brand-new, unrelated instance (e.g. a different map in the same app, or the same map
@@ -61,14 +61,12 @@ function warnLinePlacementOnce(id: string, warned: Set<string>): void {
  * (the power-of-two tile transform + `ClipExtension`) onto the props object handed to
  * `this.props.renderSubLayers` (i.e. this module's tile-render callback) *before* calling it —
  * see `mvt-layer.ts`'s `renderSubLayers`, `super.renderSubLayers(props)` region. Style-layer
- * mapper functions (Tasks 10/11) build fresh layers with their own (lnglat) coordinate
+ * mapper functions build fresh layers with their own (lnglat) coordinate
  * defaults and know nothing about that transform, so it must be re-applied here to every mapped
  * sublayer for the Mercator case — otherwise Mercator-mode content renders at the wrong
  * position/scale (only the CRS/Globe feature-route case, where content already arrives as
- * plain lnglat, needs no adjustment). Deviation from the plan's Task 12 sketch, which did not
- * carry these tile-positioning props through to the mapped layers; caught before commit by
- * reasoning through `MVTLayer.renderSubLayers`'s actual prop-mutation behavior, and pinned by
- * this file's `maplibre-style-layer.spec.ts` Mercator-positioning test. */
+ * plain lnglat, needs no adjustment). Pinned by this file's `maplibre-style-layer.spec.ts`
+ * Mercator-positioning test. */
 export interface TileRenderProps {
   id: string;
   data: unknown;
@@ -128,7 +126,7 @@ function mapOneStyleLayer(
   }
 }
 
-/** Perf fix (bucket-crossing regen storm): per (tile id, style layer id) memoization entry for
+/** Per (tile id, style layer id) memoization entry for
  * the `renderSubLayers` closure below. `mapped` is the RAW `mapOneStyleLayer` output (before
  * `applyTilePositioning`/the per-tile id-namespacing `.clone()`, both cheap/idempotent and still
  * re-applied on every call regardless of whether `mapped` itself was rebuilt). See the
@@ -144,7 +142,7 @@ interface SubLayerCacheEntry {
    * wrong for this layer. Paint/layout zoom-dependence is derived from the built layer's own
    * `updateTriggers` (every mapper function already sets `zoomBucket(zoom)` vs. `undefined` per
    * accessor via `zoomDependentBucket`/inline — see style-layer-mappers.ts/symbol-mappers.ts);
-   * filter zoom-dependence is derived separately via `filterReferencesZoom` (bug fix, review) —
+   * filter zoom-dependence is derived separately via `filterReferencesZoom` —
    * `updateTriggers` alone previously missed it entirely, since `filterFeatures` re-evaluates the
    * filter against the current `zoom` on every call without ever touching `updateTriggers`, so a
    * static-paint layer with a zoom-dependent filter was misclassified as fully static and its
@@ -176,7 +174,7 @@ function layerHasZoomDependentAccessor(layer: Layer): boolean {
   return false;
 }
 
-/** Bug fix (review): `layerHasZoomDependentAccessor` only sees a style layer's PAINT/LAYOUT
+/** `layerHasZoomDependentAccessor` only sees a style layer's PAINT/LAYOUT
  * zoom-dependence (via the built layer's `updateTriggers`) — it has no visibility at all into
  * the style layer's `filter`, which can reference `["zoom"]` on its own (e.g.
  * `filter: ["<=", ["zoom"], 10]`) with fully static paint. `filterFeatures` (style-layer-mappers.ts)
@@ -217,14 +215,13 @@ function toFeatureArray(tileData: unknown): Feature[] {
 
 /** Experimental: converts a MapLibre GL style JSON plus a vector tile source into styled
  * deck.gl layers — one deck.gl layer per style layer, per tile, in style order. Works in both
- * classic Mercator `MapView`s and CRS `MapView`s (Stage 1); `source.tileMatrixSet` follows the
+ * classic Mercator `MapView`s and CRS `MapView`s; `source.tileMatrixSet` follows the
  * same convention as `MVTLayer`/`TileLayer` (optional — unset is the common, Mercator-pyramid
- * case, auto-routed through `_MercatorCRSTileset2D` in a CRS view, not a fallback). See
- * docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md, Stage 2. */
+ * case, auto-routed through `_MercatorCRSTileset2D` in a CRS view, not a fallback). */
 export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> {
   static layerName = 'MapLibreStyleLayer';
 
-  /** Review fix (C1): `CompositeLayer`'s `activateViewport` (`modules/core/src/lib/layer.ts:628`
+  /** `CompositeLayer`'s `activateViewport` (`modules/core/src/lib/layer.ts:628`
    * region) only calls `setNeedsUpdate()` — the thing that actually causes `renderLayers()` to
    * run again next frame — when `needsUpdate()`/`shouldUpdateState()` returns true. `Layer`'s
    * default `shouldUpdateState` is `changeFlags.propsOrDataChanged` only
@@ -239,7 +236,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     return changeFlags.somethingChanged;
   }
 
-  /** Review fix (I6): (re)creates the compile cache and warn-once ledgers whenever `style` or
+  /** (Re)creates the compile cache and warn-once ledgers whenever `style` or
    * `evaluator` change identity (including first mount) — a stale cache keyed against a
    * since-replaced evaluator/style would be a correctness bug (compiled closures capturing the
    * old evaluator), not just a missed optimization, so identity, not deep-equality, is the
@@ -260,12 +257,12 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     if (!this.state.compileCache) this.state.compileCache = new Map();
     if (!this.state.warnedUnsupportedIds) this.state.warnedUnsupportedIds = new Set<string>();
     if (!this.state.warnedLinePlacementIds) this.state.warnedLinePlacementIds = new Set<string>();
-    // Perf fix (bucket-crossing regen storm): per-(tile id, style layer id) memoized sublayer
+    // Per-(tile id, style layer id) memoized sublayer
     // cache — see `SubLayerCacheEntry`'s doc comment and the `renderSubLayers` closure below.
     if (!this.state.subLayerCache) this.state.subLayerCache = new Map();
   }
 
-  /** Bug fix (review, leak): `Tileset2D.reloadAll()`/`finalize()` (`tileset-2d.ts`) drop tiles
+  /** `Tileset2D.reloadAll()`/`finalize()` (`tileset-2d.ts`) drop tiles
    * from their cache WITHOUT calling `onTileUnload` — so a `source` prop swap (same
    * style/evaluator identity, but a different tile source underneath) previously left every
    * already-cached tile id's `subLayerCache` entries in place forever: `onTileUnload` is the
@@ -282,7 +279,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
   }
 
   /** Single identity-check pass shared by `_getCompileCache`/`_getSubLayerCache`: a style or
-   * evaluator identity change invalidates BOTH caches (Review fix I6 — a stale memoized
+   * evaluator identity change invalidates BOTH caches (a stale memoized
    * sublayer built against the since-replaced style/evaluator is exactly as wrong as a stale
    * compiled expression would be); a source or `spriteAtlas` identity change invalidates only
    * `subLayerCache` (compiled paint/layout expressions don't depend on either). Kept as one
@@ -295,7 +292,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     const sourceIdentity = this._getSourceIdentity();
     const styleOrEvaluatorChanged =
       this.state.cacheStyle !== style || this.state.cacheEvaluator !== evaluator;
-    // Review fix (I5): `spriteAtlas` identity is included for the same reason
+    // `spriteAtlas` identity is included for the same reason
     // `updateTriggers.renderSubLayers` is below (see its doc comment) — a sublayer cached
     // before an async atlas resolved would otherwise never rebuild once the atlas identity
     // changes, leaving already-rendered tiles icon-less.
@@ -327,8 +324,8 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
 
   renderLayers(): LayersList {
     const {style, source, evaluator, spriteAtlas} = this.props;
-    // Review fix (C2): fail fast, once, with a clear message if the injected evaluator
-    // (Decisions for review #2 — a structural contract, not a typechecked import) is missing or
+    // Fail fast, once, with a clear message if the injected evaluator
+    // (a structural contract, not a typechecked import) is missing or
     // malformed, rather than letting the first per-feature `compileExpression`/`compileFilter`
     // call inside the tile callback throw a less obvious error mid-render.
     if (
@@ -341,18 +338,18 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           '`@maplibre/maplibre-gl-style-spec` (see the module doc for the injection contract).'
       );
     }
-    // Review fix (Round 8 finding 1): style evaluation (minzoom/maxzoom gating, zoom
+    // Style evaluation (minzoom/maxzoom gating, zoom
     // expressions, and the zoom-bucket updateTrigger below) must use the Mercator-equivalent
     // zoom, not the raw viewport zoom -- see `style-eval-zoom.ts`'s doc comment. Identity for a
     // classic Mercator MapView; only the CRS-view case actually shifts the number.
     const zoom = mercatorEquivalentZoom(this.context.viewport);
     const layers: LayersList = [];
-    // Review fix (I6): compiled once per style+evaluator identity (see `_getCompileCache`), not
+    // Compiled once per style+evaluator identity (see `_getCompileCache`), not
     // once per tile render — passed into every mapper call below and into the per-tile
     // `renderSubLayers` callback's closure, so a style layer's filter/paint expressions are
     // parsed a single time no matter how many tiles or zoom-bucket re-renders follow.
     const compileCache = this._getCompileCache();
-    // Perf fix (bucket-crossing regen storm): shared across every tile's `renderSubLayers` call
+    // Shared across every tile's `renderSubLayers` call
     // below (and across every zoom-bucket-crossing re-render), same identity-based invalidation
     // as `compileCache` (see `_getSubLayerCache`).
     const subLayerCache = this._getSubLayerCache();
@@ -363,7 +360,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     const allStyleLayers = style.layers as StyleLayer[];
     const backgroundStyleLayer = allStyleLayers.find(l => l.type === 'background');
     if (backgroundStyleLayer) {
-      // Review fix (Round 8 finding 3): a hardcoded ±180°/±90° LNGLAT world rectangle is not
+      // A hardcoded ±180°/±90° LNGLAT world rectangle is not
       // CRS-safe -- a UTM (or other small-extent) transform folds it into a degenerate shape
       // that never covers the viewport. Cover the CRS's own valid extent instead (identity for
       // a classic Mercator/non-CRS viewport, which still gets the whole-world rectangle — see
@@ -376,7 +373,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         compileCache
       );
       if (backgroundLayer) {
-        // Review fix (M1): route the background sublayer through `this.getSubLayerProps` —
+        // Route the background sublayer through `this.getSubLayerProps` —
         // namespaces its id under this composite instance's own id (avoiding a collision with
         // another `MapLibreStyleLayer` instance rendering the same style/background id) and
         // cascades `opacity`/`visible` (and other composite-level sublayer props) from the
@@ -396,8 +393,8 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
 
     const featureStyleLayers = allStyleLayers.filter(l => l.type !== 'background');
 
-    // Review fix (M4): `source` is a caller-supplied, indexed-signature bag of MVTLayer/
-    // TileLayer props (Decisions for review — lets a caller pass through e.g. `fetch`); if it
+    // `source` is a caller-supplied, indexed-signature bag of MVTLayer/
+    // TileLayer props (lets a caller pass through e.g. `fetch`); if it
     // happened to include its own `id` (or `updateTriggers`, merged explicitly below instead),
     // spreading it AFTER `this.getSubLayerProps({id: 'source'})` would silently clobber the
     // properly-namespaced inner MVTLayer id with whatever the caller passed — a real risk since
@@ -415,7 +412,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
       [key: string]: unknown;
     };
 
-    // Bug fix (review): `TileLayer.renderLayers()` (tile-layer.ts) namespaces the props object it
+    // `TileLayer.renderLayers()` (tile-layer.ts) namespaces the props object it
     // hands to `renderSubLayers` via its OWN `this.getSubLayerProps({id: tile.id, ...})` call —
     // i.e. `tileProps.id` below is `${sourceSubLayerProps.id}-${rawTileId}` (e.g.
     // "myLayer-source-0,0,0"), NOT the raw `Tile2DHeader.id` ("0,0,0") that `onTileUnload`
@@ -428,20 +425,19 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     layers.push(
       new MVTLayer(sourceSubLayerProps, {
         // Spread (not pick data/tileMatrixSet only) so any other MVTLayer/TileLayer prop the
-        // caller sets on `source` (e.g. `fetch`, for a custom/offline loader — see the app
-        // verification demo, Task 13) passes through verbatim.
+        // caller sets on `source` (e.g. `fetch`, for a custom/offline loader) passes through
+        // verbatim.
         ...restSource,
-        // Style-layer mappers (Tasks 10/11) consume plain GeoJSON Feature[] (`f.properties`,
+        // Style-layer mappers consume plain GeoJSON Feature[] (`f.properties`,
         // `f.geometry`) and fan each tile out into a *list* of mapped layers, one per matching
         // style layer — not the single-GeoJsonLayer-per-tile shape MVTLayer's `binary: true`
         // fast path expects (its own renderSubLayers logs a warning otherwise: "must return
         // GeoJsonLayer when using binary:true"). Force `binary: false` so tile content always
         // arrives pre-parsed as Feature[] (`toFeatureArray`'s binary-fallback branch below is
         // then purely defensive, not the common path) and the warning does not fire on every
-        // render in classic Mercator MapViews. Deviation: the plan's Task 12 sketch did not set
-        // this and would warn continuously in the Mercator regression case (Task 13).
+        // render in classic Mercator MapViews.
         binary: false,
-        // Review fix (C1): `renderSubLayers` is a function prop — deck.gl's shallow prop diff
+        // `renderSubLayers` is a function prop — deck.gl's shallow prop diff
         // never considers it "changed" (a fresh closure is created every render, but that's not
         // a value-comparable difference `diffUpdateTrigger` can key on), so `TileLayer`'s own
         // updateState (`tile-layer.ts:242`) never regenerated per-tile sublayers on a zoom
@@ -452,10 +448,10 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // `changeFlags.updateTriggersChanged` truthy (but not `.all`/`.getTileData`) whenever the
         // zoom bucket changes, which routes `TileLayer.updateState` into its "regenerate
         // sublayers without refetching" branch (`tile.layers = null` per tile, `tile-layer.ts:
-        // 266-268`) instead of a full `tileset.reloadAll()` — exactly the "value-compared path"
-        // the review asked for.
+        // 266-268`) instead of a full `tileset.reloadAll()` — exactly the value-compared path
+        // needed here.
         //
-        // Review fix (Round 8 finding 2): keying solely on the zoom bucket left already-
+        // Keying solely on the zoom bucket left already-
         // materialized tile sublayers stale across a *style* swap that didn't also cross an
         // integer zoom boundary (e.g. two styles sharing a source id) — a changed `style` prop
         // never regenerated them. `diffUpdateTrigger`'s `compareProps` falls back to reference
@@ -465,8 +461,8 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // composite's own cache-invalidation key, see `_getCompileCache`) also flip
         // `updateTriggersChanged`, regenerating sublayers on a style swap exactly as it already
         // does on a zoom-bucket crossing.
-        // Review fix (I5): `spriteAtlas` is added to the `renderSubLayers` updateTrigger for
-        // the same reason `style` already is (Round 8 finding 2, above) — `mapSymbolIconLayer`
+        // `spriteAtlas` is added to the `renderSubLayers` updateTrigger for
+        // the same reason `style` already is (above) — `mapSymbolIconLayer`
         // closes over `spriteAtlas` at build time, and a caller-provided atlas commonly resolves
         // ASYNCHRONOUSLY after the first tiles have already rendered icon-less; without this, a
         // subsequent atlas identity change (the resolved atlas replacing an initial `undefined`/
@@ -477,13 +473,13 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           ...(sourceUpdateTriggers ?? {}),
           renderSubLayers: [zoomBucket(zoom), style, spriteAtlas]
         },
-        // Perf fix (bucket-crossing regen storm): evicts this tile's memoized sublayer cache
+        // Evicts this tile's memoized sublayer cache
         // entries once the tile itself is dropped (cache size, eviction, `maxCacheSize`/
         // `maxCacheByteSize`) — without this, `subLayerCache` would grow unbounded across a long
         // pan/zoom session (an entry per style layer for every tile ID ever visited, never
         // reclaimed).
         //
-        // Bug fix (review): `tile.id` here is the RAW `Tile2DHeader.id` (un-namespaced) —
+        // `tile.id` here is the RAW `Tile2DHeader.id` (un-namespaced) —
         // `subLayerCache` is keyed on `tileProps.id` (the namespaced id, see `sourceSubLayerProps`
         // above), so deleting by `tile.id` alone never matched any entry. Reconstruct the same
         // namespaced key `renderSubLayers` populated the cache under.
@@ -498,7 +494,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           if (!tileCache) {
             tileCache = new Map();
             subLayerCache.set(tileProps.id, tileCache);
-            // Bug fix (review, leak): `onTileUnload` above is the primary eviction path, but
+            // `onTileUnload` above is the primary eviction path, but
             // `Tileset2D.reloadAll()`/`finalize()` (`tileset-2d.ts`) can drop tiles from the
             // tileset's own cache WITHOUT calling it — a bounded LRU cap here is a backstop
             // against exactly that case (as well as any other future eviction gap), so a single
@@ -522,7 +518,7 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
             const prevEntry = tileCache.get(styleLayer.id);
             const inZoomRangeNow =
               isStyleLayerVisible(styleLayer) && isStyleLayerInZoomRange(styleLayer, zoom);
-            // Perf fix (bucket-crossing regen storm): `updateTriggers.renderSubLayers` above is
+            // `updateTriggers.renderSubLayers` above is
             // keyed on the zoom BUCKET (see its doc comment) — any integer-zoom crossing nulls
             // out every cached tile's sublayers (`tile-layer.ts`'s `tile.layers = null` branch),
             // forcing this callback to re-run for EVERY tile, even though the overwhelming
@@ -567,11 +563,11 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
               // TileLayer's default renderSubLayers relies on `props.id` (tile-unique, set by
               // TileLayer before calling this callback) flowing straight into `new
               // GeoJsonLayer(props)` for per-tile id uniqueness; unlike that default, mapper
-              // functions (Tasks 10/11) hardcode a static `maplibre-${styleLayer.id}` id, which
+              // functions hardcode a static `maplibre-${styleLayer.id}` id, which
               // collides across every sibling tile under the same MVTLayer (LayerManager then
-              // throws "finalized layer cannot be reused" - caught via the app verification
-              // Playwright run, Task 13, not by the node/headless unit tests since none of them
-              // render more than one tile at a time). Re-namespace with the tile's own id here.
+              // throws "finalized layer cannot be reused" - not caught by the node/headless unit
+              // tests since none of them render more than one tile at a time). Re-namespace with
+              // the tile's own id here.
               sublayers.push(positioned.clone({id: `${tileProps.id}-${positioned.id}`}));
             }
           }

@@ -147,8 +147,7 @@ export default class MVTLayer<
   }
 
   updateState({props, oldProps, context, changeFlags}: UpdateParameters<this>) {
-    // Multi-view / live projection-mode fast-follow (see docs/superpowers/specs/
-    // 2026-07-06-crs-multiview-audit.md, scenario 1): `initializeState()` derives
+    // `initializeState()` derives
     // `state.binary` from `usesFeatureRoute(context.viewport)` exactly once, at layer creation.
     // `context.viewport` is a single mutable slot on the shared layer context that reflects
     // whichever viewport was last activated (`layer-manager.ts#activateViewport`) -- for a
@@ -222,8 +221,7 @@ export default class MVTLayer<
    * `_WarpedTileLayer` uses to reproject a CRS view into Mercator source space — whose
    * `getTileMetadata()` lnglat `bbox` feeds the existing wgs84 decode route with no glue code.
    * An explicit `TilesetClass` override always wins (mirrors `TileLayer`'s own policy for
-   * `tileMatrixSet`). See docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md,
-   * Design item 3. */
+   * `tileMatrixSet`). */
   _getTilesetClass(): typeof Tileset2D {
     const TilesetClass = super._getTilesetClass();
     if (

@@ -11,8 +11,7 @@ import {PROJECTION_MODE, type Viewport} from '@deck.gl/core';
  * Globe-only signal) — CRS views need the identical route for the identical reason: neither
  * is a Mercator XYZ power-of-two tile pyramid, so the Mercator-specific sublayer transform
  * (`WORLD_SIZE / 2^z` scaling) does not apply, and both already have per-tile lnglat bounds
- * available (`GeoBoundingBox`) to decode against. See
- * `docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md`, Stage 1 Design. */
+ * available (`GeoBoundingBox`) to decode against. */
 export function usesFeatureRoute(viewport: Viewport): boolean {
   return (
     (viewport as {resolution?: number}).resolution !== undefined ||

@@ -174,7 +174,7 @@ export default class SolidPolygonLayer<DataT = any, ExtraPropsT extends {} = {}>
 
     // In a CRS view, `viewport.projectFlat` calls `crs.transform.forward` (proj-wasm) -
     // calling it once per polygon vertex during triangulation is the dominant CRS-view
-    // CPU cost for fill/polygon basemap layers (see Round 15 profiling). Triangulation
+    // CPU cost for fill/polygon basemap layers. Triangulation
     // only needs a projection that preserves each polygon's local winding/monotonicity,
     // not metric exactness, and the vertex shader only ever renders CRS LNGLAT
     // positions via the same local affine+quadratic (Jacobian/Hessian) approximation
@@ -388,7 +388,7 @@ export default class SolidPolygonLayer<DataT = any, ExtraPropsT extends {} = {}>
       const buffers = (props.data as any).attributes || {};
       const {viewport} = this.context;
 
-      // Bug fix (review, item 4): `initializeState` builds the CRS affine tesselation
+      // `initializeState` builds the CRS affine tesselation
       // `preproject` ONCE, closing over whatever the view center was at mount time (see
       // `crs-affine-preproject.ts#getPolygonTesselatorPreproject`'s `origin` argument). A
       // re-tesselation triggered here (this `geometryConfigChanged` branch) can happen long

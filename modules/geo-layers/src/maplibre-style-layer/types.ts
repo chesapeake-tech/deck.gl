@@ -31,14 +31,13 @@ export interface MapLibreStyleEvaluator {
   convertFunction?: (parameters: unknown, propertySpec: unknown) => unknown;
 }
 
-/** A single vector tile source: a `{z}/{x}/{y}` URL template plus optional CRS-native tiling
- * (Stage 1). Mirrors `MVTLayerProps`'s own `data`/`tileMatrixSet` shape. `tileMatrixSet` is
- * optional and unset is the common case, not a fallback (Stage 2 addendum): Stage 1's
+/** A single vector tile source: a `{z}/{x}/{y}` URL template plus optional CRS-native tiling.
+ * Mirrors `MVTLayerProps`'s own `data`/`tileMatrixSet` shape. `tileMatrixSet` is
+ * optional and unset is the common case, not a fallback:
  * `MVTLayer._getTilesetClass()` auto-routes a `tileMatrixSet`-less source through
  * `_MercatorCRSTileset2D` in a CRS `MapView`. The index signature lets a caller pass through any
  * other `MVTLayer`/`TileLayer` prop the composite forwards verbatim to its inner `MVTLayer`
- * (Task 13 addendum) — e.g. `fetch` for a custom/offline loader, as the app verification demo
- * does (no public UTM-area MVT test service exists, mirroring Stage 1's own demo constraint). */
+ * — e.g. `fetch` for a custom/offline loader. */
 export interface MapLibreVectorSource {
   data: string;
   tileMatrixSet?: TileMatrixSet;

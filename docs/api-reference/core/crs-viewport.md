@@ -276,9 +276,7 @@ Returns:
   also works correctly by default, but if an app explicitly overrides its `coordinateSystem`
   prop to `'lnglat'`, its bounds-clipping guard hardcodes Web Mercator's ±85.051129° latitude
   singularity as a constant, which is meaningless for another CRS's own valid domain (a UTM
-  zone's domain has nothing to do with that latitude) — not yet fixed. See the CRS
-  aggregation-layer audit spec (`docs/superpowers/specs/2026-07-05-crs-aggregation-audit.md`)
-  for the full per-layer trace.
+  zone's domain has nothing to do with that latitude) — not yet fixed.
 
 ### Multi-view: sharing a layer across a Mercator view and a CRS view
 
@@ -292,10 +290,8 @@ adds one CRS-specific instance of it (`_MapLibreStyleLayer`'s zoom-dependent sty
 because sublayer *generation* for these layers (`renderLayers()`/`renderSubLayers()`, tile
 selection, `getTileData()`) runs once per update cycle against a single, shared
 `context.viewport` — not once per viewport a frame draws into (only per-vertex GPU projection is
-re-done per viewport at draw time; see the [multi-view mixed-projection audit
-report](https://github.com/visgl/deck.gl/blob/feat/crs-mapview/docs/superpowers/specs/2026-07-06-crs-multiview-audit.md)
-for the full trace). Concretely, if you share one of these layer instances across a Mercator view
-and a CRS view (or live-swap a single view's `crs` on an existing instance):
+re-done per viewport at draw time). Concretely, if you share one of these layer instances across
+a Mercator view and a CRS view (or live-swap a single view's `crs` on an existing instance):
 
 * **`TileLayer`/`MVTLayer` with a `tileMatrixSet` (CRS-native tiling) or an `_WarpedTileLayer`**
   fail loudly and safely: `CRSTileset2D`/`MercatorCRSTileset2D` throw an explicit

@@ -63,7 +63,7 @@ test('backgroundCoveringFeature#CRS (UTM) viewport: covers the CRS extent, not a
   expect(viewport.latitude).toBeLessThan(Math.max(...lats));
 });
 
-// Perf fix (review): `renderLayers()` runs on every frame during camera motion (whenever
+// `renderLayers()` runs on every frame during camera motion (whenever
 // `shouldUpdateState` sees `changeFlags.somethingChanged`, which a pan/zoom/pitch triggers), and
 // previously rebuilt the covering feature -- and, one level up in `mapBackgroundLayer`
 // (style-layer-mappers.ts), a fresh `[feature]` wrapping array -- from scratch on every single

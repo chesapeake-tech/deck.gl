@@ -77,7 +77,7 @@ function densifyGeographicBoundary(
 ): [number, number][] {
   const [west, south, east, north] = extentGeographic;
   const n = EXTENT_GEOGRAPHIC_SAMPLES;
-  // Hardening (review item 6c): `west > east` means an antimeridian-crossing bbox (e.g.
+  // `west > east` means an antimeridian-crossing bbox (e.g.
   // `[170, ..., -170, ...]`, the narrow strip straddling +/-180 -- NOT the ~340-degree strip
   // the other way around, which is what naively interpolating `west + t * (east - west)` would
   // sweep through instead). Interpolate through `east + 360` (the short way, through the
@@ -143,7 +143,7 @@ function deriveExtentFromGeographic(
         `geographic bbox`
     );
   }
-  // Hardening (review item 6d): fewer than 4 finite samples already throws (above) - the CRS
+  // Fewer than 4 finite samples already throws (above) - the CRS
   // clearly doesn't cover the requested bbox at all. This case is milder but still worth
   // flagging: MOST (but not all) samples non-finite means the derived extent is extrapolated
   // from a small, possibly unrepresentative minority of the requested boundary (e.g. a bbox
@@ -398,7 +398,7 @@ export function getCRSMetersJacobian(
     // Reuses getCRSJacobian's own (crs, origin) memoization - a cache hit here costs no
     // extra proj-wasm calls even on a cache miss for this function.
     const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
-    // Hardening (review item 6b): uncapped, `cos(lat)` approaches 0 (and this division blows
+    // Uncapped, `cos(lat)` approaches 0 (and this division blows
     // up) as `|lat|` approaches 90 - mirroring the exact failure mode `map-controller.ts`'s own
     // `lngLatToWorld` already guards against for a different computation (see its
     // `Math.abs(lat) > 90` clamp). Clamping `|lat|` to <= 89.9 before `cos()` keeps the result
@@ -514,7 +514,7 @@ function getUnitsPerMeter(jacobian: [number, number, number, number]): number {
 /** Clamp a lnglat position so that its projection lies inside the CRS extent.
  * Works in CRS space: project, clamp XY to the extent, unproject. If the forward
  * transform is not finite at the input, falls back to the extent center. If the final
- * `inverse()` of the clamped position is ALSO non-finite (review item 6a - a CRS whose inverse
+ * `inverse()` of the clamped position is ALSO non-finite (a CRS whose inverse
  * happens to be undefined at some point strictly inside its own declared `extent`, e.g. singular
  * at the extent's edges), falls back to `inverse()` of the extent center instead - `normalizeCRS`
  * already validates that round-trips, so it is always a safe, finite result. */
