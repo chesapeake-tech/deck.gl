@@ -73,9 +73,28 @@ function projectMaxBoundsCorner(viewport: Viewport | null, lnglat: number[]): [n
 
 /** A non-finite axis value resolves to the CRS extent's own edge in that direction
  * (see {@link projectMaxBoundsCorner}); `undefined` means the axis needs a real
- * projection instead. */
-function resolveNonFiniteAxis(value: number, minEdge: number, maxEdge: number): number | undefined {
-  return Number.isFinite(value) ? undefined : value < 0 ? minEdge : maxEdge;
+ * projection instead.
+ *
+ * Hardening (review item 6e): `NaN` is non-finite too, but unlike a signed infinity (which has
+ * a clear "which edge" answer - the library's own default `maxBounds` spans longitude to
+ * `+/-Infinity`), NaN carries no directional information at all. `NaN < 0` is always `false`,
+ * so treating it the same as a finite-sign check silently resolved every NaN to `maxEdge`
+ * regardless of which corner it came from - an arbitrary bias for what is really "no meaningful
+ * value", not "unconstrained toward the max side". `Number.isNaN` is checked explicitly here so
+ * NaN instead falls through to `undefined` (unconstrained by this shortcut, needs the real
+ * per-axis projection a few lines below), the same as any other finite value would.
+ *
+ * Exported (only from this module, not the `@deck.gl/core` public barrel) for direct unit
+ * coverage in `map-controller-crs.node.spec.ts`. */
+export function resolveNonFiniteAxis(
+  value: number,
+  minEdge: number,
+  maxEdge: number
+): number | undefined {
+  if (Number.isFinite(value) || Number.isNaN(value)) {
+    return undefined;
+  }
+  return value < 0 ? minEdge : maxEdge;
 }
 
 function projectCRSMaxBoundsCorner(viewport: CRSViewport, lnglat: number[]): [number, number] {
