@@ -34,6 +34,21 @@ type ViewportCRS = {
   transform: {inverse: (xy: [number, number]) => [number, number]};
 };
 
+/** Perf fix (review): `renderLayers()` runs on every frame during camera motion (whenever
+ * `shouldUpdateState` sees `changeFlags.somethingChanged`), and `backgroundCoveringFeature`
+ * previously rebuilt the covering feature from scratch on EVERY call — `EXTENT_SAMPLES * 4 + 1`
+ * (33) `crs.transform.inverse` calls plus a fresh `Feature` allocation — even though the
+ * covering shape depends only on `crs.extent`/`crs.transform`, not on pan/zoom/pitch, so it
+ * never actually changes across those calls. That fresh object reference then propagated
+ * through `mapBackgroundLayer`'s `data: [feature]` (style-layer-mappers.ts) into
+ * `GeoJsonLayer`'s `data` prop, forcing a full re-tessellation on every frame. Memoized per
+ * `crs` object identity (`WeakMap`, mirroring `crs-utils.ts`'s own `memoizedByOrigin` pattern
+ * for the same class of per-(crs) derived value) — see `backgroundCoveringFeature`'s doc
+ * comment for the caveat this only helps within calls sharing the exact same `viewport.crs`
+ * reference (e.g. multiple background style layers/instances in one frame), since
+ * `CRSViewport`'s constructor re-normalizes `crs` fresh on every construction. */
+const coveringFeatureCache = new WeakMap<ViewportCRS, Feature>();
+
 /** Sample points along the four edges of a `[minX, minY, maxX, maxY]` extent,
  * `EXTENT_SAMPLES` points per edge, traversed as a single closed ring. */
 function densifyExtentRing(extent: [number, number, number, number]): [number, number][] {
@@ -77,10 +92,16 @@ export function backgroundCoveringFeature(viewport: Viewport): Feature {
   // helpers (`style-eval-zoom.ts`) and the fork's own `warp-mesh.ts` convention.
   const crs = (viewport as Viewport & {crs?: ViewportCRS}).crs;
   if (!crs) {
+    // Already a module constant (`WORLD_RECT`), so this is memoized "for free" -- every
+    // Mercator (non-CRS) call already returns the exact same reference, no cache needed.
     return WORLD_RECT;
   }
+  const cached = coveringFeatureCache.get(crs);
+  if (cached) {
+    return cached;
+  }
   const ring = densifyExtentRing(crs.extent).map(xy => crs.transform.inverse(xy));
-  return {
+  const feature: Feature = {
     type: 'Feature',
     properties: {},
     geometry: {
@@ -88,4 +109,6 @@ export function backgroundCoveringFeature(viewport: Viewport): Feature {
       coordinates: [ring]
     }
   };
+  coveringFeatureCache.set(crs, feature);
+  return feature;
 }
