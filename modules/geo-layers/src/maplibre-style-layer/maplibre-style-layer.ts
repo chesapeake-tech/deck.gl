@@ -27,6 +27,12 @@ import {backgroundCoveringFeature} from './background-coverage';
 
 const SUPPORTED_TYPES = new Set(['fill', 'line', 'fill-extrusion', 'symbol']);
 
+/** Backstop cap on the number of distinct tile ids tracked in `subLayerCache` at once — see
+ * the eviction comment at its insertion point below. Generous relative to any one viewport's
+ * visible tile count (bounded by `TileLayer`'s own `maxCacheSize`/screen coverage), so it only
+ * ever engages for the leak scenarios `onTileUnload` alone doesn't cover, not ordinary panning. */
+const MAX_SUB_LAYER_CACHE_TILES = 500;
+
 /** Review fix (M2): these warn-once ledgers were previously module-scope `Set`s, shared by
  * EVERY `MapLibreStyleLayer` instance for the lifetime of the JS module (i.e. the whole page) —
  * a style layer id warned once by one map/layer instance would never warn again even for a
@@ -259,25 +265,63 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
     if (!this.state.subLayerCache) this.state.subLayerCache = new Map();
   }
 
-  private _getCompileCache(): CompileCache {
+  /** Bug fix (review, leak): `Tileset2D.reloadAll()`/`finalize()` (`tileset-2d.ts`) drop tiles
+   * from their cache WITHOUT calling `onTileUnload` — so a `source` prop swap (same
+   * style/evaluator identity, but a different tile source underneath) previously left every
+   * already-cached tile id's `subLayerCache` entries in place forever: `onTileUnload` is the
+   * ONLY eviction path (see the `renderSubLayers`/`onTileUnload` closure below), and it never
+   * ran for those tiles. Unbounded growth across repeated `source` swaps in a long-lived app
+   * (style/evaluator identity held stable, only `source` changing, e.g. a basemap style whose
+   * vector source URL is swapped by the caller). Tracks `source.data` — not `source` itself,
+   * which is often a fresh object every render (a caller-supplied, open-ended prop bag) — as
+   * the actual tile-source identity, the same way `cacheStyle`/`cacheEvaluator` already track
+   * `style`/`evaluator` identity. */
+  private _getSourceIdentity(): unknown {
+    const {source} = this.props;
+    return (source as {data?: unknown} | undefined)?.data ?? source;
+  }
+
+  /** Single identity-check pass shared by `_getCompileCache`/`_getSubLayerCache`: a style or
+   * evaluator identity change invalidates BOTH caches (Review fix I6 — a stale memoized
+   * sublayer built against the since-replaced style/evaluator is exactly as wrong as a stale
+   * compiled expression would be); a source or `spriteAtlas` identity change invalidates only
+   * `subLayerCache` (compiled paint/layout expressions don't depend on either). Kept as one
+   * method — rather than two independent identity checks, one per accessor — so the two
+   * accessors can never observe different generations of `this.state.cacheStyle`/
+   * `cacheEvaluator` depending on which one happened to run first. */
+  private _syncCaches(): void {
     this._ensureState();
-    const {style, evaluator} = this.props;
-    if (this.state.cacheStyle !== style || this.state.cacheEvaluator !== evaluator) {
+    const {style, evaluator, spriteAtlas} = this.props;
+    const sourceIdentity = this._getSourceIdentity();
+    const styleOrEvaluatorChanged =
+      this.state.cacheStyle !== style || this.state.cacheEvaluator !== evaluator;
+    // Review fix (I5): `spriteAtlas` identity is included for the same reason
+    // `updateTriggers.renderSubLayers` is below (see its doc comment) — a sublayer cached
+    // before an async atlas resolved would otherwise never rebuild once the atlas identity
+    // changes, leaving already-rendered tiles icon-less.
+    const subLayerInvalidatorChanged =
+      this.state.cacheSourceIdentity !== sourceIdentity ||
+      this.state.cacheSpriteAtlas !== spriteAtlas;
+
+    if (styleOrEvaluatorChanged) {
       this.state.compileCache = new Map();
-      // A stale memoized sublayer built against the since-replaced style/evaluator is exactly
-      // as wrong as a stale compiled expression would be (Review fix I6's reasoning applies
-      // identically here) — invalidate together, on the same identity check.
-      this.state.subLayerCache = new Map();
-      this.state.cacheStyle = style;
-      this.state.cacheEvaluator = evaluator;
     }
+    if (styleOrEvaluatorChanged || subLayerInvalidatorChanged) {
+      this.state.subLayerCache = new Map();
+    }
+    this.state.cacheStyle = style;
+    this.state.cacheEvaluator = evaluator;
+    this.state.cacheSourceIdentity = sourceIdentity;
+    this.state.cacheSpriteAtlas = spriteAtlas;
+  }
+
+  private _getCompileCache(): CompileCache {
+    this._syncCaches();
     return this.state.compileCache as CompileCache;
   }
 
   private _getSubLayerCache(): Map<string, Map<string, SubLayerCacheEntry>> {
-    // `_getCompileCache` performs the identity check (and resets both caches together); call it
-    // first so `subLayerCache` reflects the current style+evaluator identity.
-    this._getCompileCache();
+    this._syncCaches();
     return this.state.subLayerCache as Map<string, Map<string, SubLayerCacheEntry>>;
   }
 
@@ -421,9 +465,17 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
         // composite's own cache-invalidation key, see `_getCompileCache`) also flip
         // `updateTriggersChanged`, regenerating sublayers on a style swap exactly as it already
         // does on a zoom-bucket crossing.
+        // Review fix (I5): `spriteAtlas` is added to the `renderSubLayers` updateTrigger for
+        // the same reason `style` already is (Round 8 finding 2, above) — `mapSymbolIconLayer`
+        // closes over `spriteAtlas` at build time, and a caller-provided atlas commonly resolves
+        // ASYNCHRONOUSLY after the first tiles have already rendered icon-less; without this, a
+        // subsequent atlas identity change (the resolved atlas replacing an initial `undefined`/
+        // placeholder) never re-ran this callback, so already-materialized tiles stayed
+        // icon-less forever. `_syncCaches`'s `subLayerCache` invalidation (same identity check)
+        // covers the same gap for tiles reused from `subLayerCache` via `canReuse` below.
         updateTriggers: {
           ...(sourceUpdateTriggers ?? {}),
-          renderSubLayers: [zoomBucket(zoom), style]
+          renderSubLayers: [zoomBucket(zoom), style, spriteAtlas]
         },
         // Perf fix (bucket-crossing regen storm): evicts this tile's memoized sublayer cache
         // entries once the tile itself is dropped (cache size, eviction, `maxCacheSize`/
@@ -446,6 +498,21 @@ export class MapLibreStyleLayer extends CompositeLayer<MapLibreStyleLayerProps> 
           if (!tileCache) {
             tileCache = new Map();
             subLayerCache.set(tileProps.id, tileCache);
+            // Bug fix (review, leak): `onTileUnload` above is the primary eviction path, but
+            // `Tileset2D.reloadAll()`/`finalize()` (`tileset-2d.ts`) can drop tiles from the
+            // tileset's own cache WITHOUT calling it — a bounded LRU cap here is a backstop
+            // against exactly that case (as well as any other future eviction gap), so a single
+            // long-lived instance can never accumulate unbounded per-tile entries even if some
+            // future/edge eviction path also turns out to skip `onTileUnload`. `Map` iterates in
+            // insertion order, so the entries evicted first are the least-recently-INSERTED
+            // ones — an approximation of LRU (not true recency-of-use), cheap enough to run on
+            // every new tile without its own bookkeeping.
+            if (subLayerCache.size > MAX_SUB_LAYER_CACHE_TILES) {
+              const oldestKey = subLayerCache.keys().next().value;
+              if (oldestKey !== undefined) {
+                subLayerCache.delete(oldestKey);
+              }
+            }
           }
           for (const styleLayer of featureStyleLayers) {
             if (!SUPPORTED_TYPES.has(styleLayer.type)) {
