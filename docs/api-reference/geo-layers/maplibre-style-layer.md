@@ -152,6 +152,10 @@ resolution (`viewport.metersPerPixel`) instead, which is an exact no-op (identic
 and there it makes minzoom-gated content (e.g. reference labels) appear at the ground scale a real
 MapLibre/Mercator map would show them at, instead of being hidden.
 
+This helper is exported from `@deck.gl/geo-layers` as `_mercatorEquivalentZoom(viewport)` for
+consumers that need the same Mercator-equivalent zoom outside this layer (e.g. driving their own
+CRS-aware `minzoom`/`maxzoom` gating), rather than re-deriving the formula themselves.
+
 ### `background` style layers and CRS views
 
 A `background` style layer has no source features, so it is rendered by covering the current
