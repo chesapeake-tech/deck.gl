@@ -73,16 +73,15 @@ test('backgroundCoveringFeature#CRS (UTM) viewport: covers the CRS extent, not a
 // though the CRS (and so the true covering shape) never changed. `backgroundCoveringFeature`
 // must return the SAME `Feature` reference for the same `crs` identity across calls.
 test('backgroundCoveringFeature#CRS viewport: memoized per crs identity (same reference across repeated calls, no repeated transform.inverse work)', () => {
-  // `CRSViewport`'s constructor re-runs `normalizeCRS(opts.crs)` on every construction (a
-  // separate, pre-existing characteristic of `CRSViewport`, not something this fix changes),
-  // so two independently-constructed viewports never share a `.crs` *object* even when built
-  // from the same `CRSDefinition` input -- the realistic scenario this fix targets is instead
-  // the SAME viewport instance (`this.context.viewport`, stable for the duration of one
-  // render/frame) being passed to `backgroundCoveringFeature` more than once, e.g. two
-  // `MapLibreStyleLayer` instances (or two background style layers) sharing one frame's
-  // viewport -- the covering shape depends only on `crs.extent`/`crs.transform`, not on
-  // pan/zoom/pitch, so repeated calls with the SAME `viewport.crs` reference must return the
-  // exact same `Feature` object, not recompute the 33-sample densified ring each time.
+  // `CRSViewport`'s constructor calls `normalizeCRS(opts.crs)`, which is now itself memoized
+  // on the input `crs` object's identity (see crs-utils.node.spec.ts's "normalizeCRS identity
+  // memoization" tests) -- so two independently-constructed viewports built from the SAME
+  // `CRSDefinition` object now share the same `.crs` (`NormalizedCRS`) reference too, and this
+  // memo (keyed on that reference) reuses cross-frame, not just within one viewport instance.
+  // This is the realistic win: an app that memoizes its `CRSDefinition` (per docs guidance)
+  // and constructs a fresh `CRSViewport` per frame (as `ViewManager` does on every viewState
+  // change) now gets full cross-frame cache reuse here, not just reuse within one frame's
+  // repeated calls (e.g. multiple `MapLibreStyleLayer` instances sharing one viewport).
   const viewport = new CRSViewport({
     crs: UTM18N,
     width: 800,
@@ -96,9 +95,9 @@ test('backgroundCoveringFeature#CRS viewport: memoized per crs identity (same re
   const feature2 = backgroundCoveringFeature(viewport as any);
   expect(feature2).toBe(feature1);
 
-  // A DIFFERENTLY-CONSTRUCTED viewport (even from the identical `CRSDefinition` input) gets its
-  // own `.crs` object per `normalizeCRS`'s per-construction behavior above, so it must not
-  // (and structurally cannot) share the first viewport's cache entry.
+  // A DIFFERENTLY-CONSTRUCTED viewport, built from the SAME `CRSDefinition` object (`UTM18N`),
+  // now shares that same normalizeCRS-memoized `.crs` reference -- so it shares the cache
+  // entry too, and gets back the identical `Feature` object, not just an equal one.
   const otherViewport = new CRSViewport({
     crs: UTM18N,
     width: 800,
@@ -107,6 +106,37 @@ test('backgroundCoveringFeature#CRS viewport: memoized per crs identity (same re
     latitude: 40,
     zoom: 5
   });
+  const otherFeature = backgroundCoveringFeature(otherViewport as any);
+  expect(otherFeature).toBe(feature1);
+});
+
+// A viewport built from a genuinely DIFFERENT `CRSDefinition` object (even with identical
+// content) must NOT share the first viewport's cache entry -- normalizeCRS's memoization is
+// keyed on the input object's identity, not on its `code`/contents (see
+// crs-utils.node.spec.ts's "two distinct object literals ... return different references"
+// test), so a distinct `CRSDefinition` object correctly yields a distinct `.crs` reference and
+// thus a distinct (but value-equal) covering feature.
+test('backgroundCoveringFeature#CRS viewport: a genuinely distinct CRSDefinition object does not share the cache entry', () => {
+  const distinctUTM18N = {...UTM18N};
+
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 5
+  });
+  const otherViewport = new CRSViewport({
+    crs: distinctUTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 5
+  });
+
+  const feature1 = backgroundCoveringFeature(viewport as any);
   const otherFeature = backgroundCoveringFeature(otherViewport as any);
   expect(otherFeature).not.toBe(feature1);
   // ...but is still equal in VALUE -- the memoization is a cache, not a change in output.

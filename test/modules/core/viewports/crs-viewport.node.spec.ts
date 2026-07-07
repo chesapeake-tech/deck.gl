@@ -6,6 +6,7 @@ import {test, expect} from 'vitest';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import {UTM18N} from './crs-fixtures';
+import type {CRSDefinition} from '@deck.gl/core/viewports/crs-utils';
 
 const BASE_PROPS = {width: 800, height: 600, crs: UTM18N};
 
@@ -160,4 +161,52 @@ test('CRSViewport#equals', () => {
   const opts = {...BASE_PROPS, longitude: -72, latitude: 40, zoom: 10};
   expect(new CRSViewport(opts).equals(new CRSViewport(opts))).toBe(true);
   expect(new CRSViewport(opts).equals(new CRSViewport({...opts, crs: 'EPSG:4326'}))).toBe(false);
+});
+
+/** Wraps a CRSDefinition's transform so every call to forward is counted, without changing
+ * its numerical behavior. Mirrors crs-utils.node.spec.ts's own `countingCRS` helper. */
+function countingCRS(base: CRSDefinition): {crs: CRSDefinition; counts: {forward: number}} {
+  const counts = {forward: 0};
+  const crs: CRSDefinition = {
+    ...base,
+    transform: {
+      forward: (lnglat: [number, number]) => {
+        counts.forward++;
+        return base.transform.forward(lnglat);
+      },
+      inverse: base.transform.inverse
+    }
+  };
+  return {crs, counts};
+}
+
+// ViewManager rebuilds CRSViewports on every viewState change, calling
+// `normalizeCRS(opts.crs)` freshly each time (crs-viewport.ts's constructor). normalizeCRS is
+// now memoized on the input `crs` object's identity, so an app that passes the exact same
+// `crs`/`CRSDefinition` object reference across constructions (per docs guidance) should not
+// re-pay normalizeCRS's round-trip-validation `transform.forward` call (nor lose the
+// downstream per-origin Jacobian/Hessian caches, which are keyed on the resulting
+// `NormalizedCRS` reference) on the second and later constructions - both hit the cache
+// instead, so the second construction adds strictly fewer `transform.forward` calls than
+// the first (cache-miss) construction did.
+test('CRSViewport#construction: normalizeCRS cache hit skips re-validating the same crs object on a second construction', () => {
+  const opts = {width: 800, height: 600, longitude: -72, latitude: 40, zoom: 10};
+  const {crs, counts} = countingCRS(UTM18N);
+
+  new CRSViewport({...opts, crs});
+  const callsAfterFirstConstruction = counts.forward;
+  // The first construction is a cache miss: normalizeCRS's own round-trip-validation call,
+  // plus the per-origin Jacobian cache miss inside getCRSDistanceScales, together guarantee
+  // more than one forward call.
+  expect(callsAfterFirstConstruction).toBeGreaterThan(1);
+
+  // Second construction: identical options, same crs object reference.
+  new CRSViewport({...opts, crs});
+  const callsAddedBySecondConstruction = counts.forward - callsAfterFirstConstruction;
+
+  // The second construction reuses the same crs object (normalizeCRS cache hit, skipping
+  // its round-trip-validation forward call) and the same (crs, origin) pair for the
+  // Jacobian/distance-scales computation (also a cache hit) - so it must add strictly
+  // fewer forward calls than the first, cache-miss construction did.
+  expect(callsAddedBySecondConstruction).toBeLessThan(callsAfterFirstConstruction);
 });
