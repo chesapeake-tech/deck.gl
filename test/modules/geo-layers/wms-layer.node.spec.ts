@@ -235,6 +235,39 @@ test('WMSLayer#CRS view with a mismatched srs warns and falls back to LNGLAT bou
   }
 });
 
+test('WMSLayer#CRS view with an srs that is neither the view CRS, EPSG:4326, nor EPSG:3857 warns that the combination is unsupported', async () => {
+  // `_getRequestBounds`'s fallback (`useExactCRSBounds` false) only builds a request bbox that
+  // matches the declared `crs` for two special cases: EPSG:4326 (raw lnglat degrees) and
+  // EPSG:3857 (WGS84ToPseudoMercator). For any OTHER mismatched srs, the request still sends
+  // lnglat-degree bounds but tags them with that arbitrary srs code -- a WMS server would
+  // interpret those degree values as being in the declared (likely projected/meters) CRS,
+  // producing a nonsensical bbox. The generic "falls back to approximate LNGLAT bounds" warning
+  // used for the 4326/3857 fallback cases overstates what actually happens here, so this case
+  // gets its own warning naming the unsupported combination.
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 400,
+    height: 300,
+    longitude: -72,
+    latitude: 40,
+    zoom: 6
+  });
+  const warnSpy = vi.spyOn(log, 'warn');
+  const {layer, finalize} = mountWMSLayer(viewport, {srs: 'EPSG:32619'});
+  try {
+    await layer.loadImage(viewport, 'test');
+
+    expect(warnSpy).toHaveBeenCalled();
+    const warnedMessage = warnSpy.mock.calls.map(call => String(call[0])).join('\n');
+    expect(warnedMessage).toContain('EPSG:32619');
+    expect(warnedMessage).toContain(UTM18N.code);
+    expect(warnedMessage.toLowerCase()).toContain('unsupported');
+  } finally {
+    warnSpy.mockRestore();
+    finalize();
+  }
+});
+
 test('WMSLayer#non-CRS view with srs EPSG:4326 positions the image via LNGLAT (not CARTESIAN)', async () => {
   // Pins a pre-existing upstream bug: `renderLayers` read `lastRequestParameters.srs`, but
   // the object actually stored (the `GetImageParameters` passed to `getImage`) only has a
@@ -258,6 +291,37 @@ test('WMSLayer#non-CRS view with srs EPSG:4326 positions the image via LNGLAT (n
 
     const sublayer = layer.renderLayers() as any;
     expect(sublayer.props._imageCoordinateSystem).toBe(COORDINATE_SYSTEM.LNGLAT);
+  } finally {
+    finalize();
+  }
+});
+
+test('WMSLayer#CRS view with crs.code "EPSG:4326" positions via CARTESIAN (common-space), not LNGLAT', async () => {
+  // Regression test: the view CRS's *code* being the string 'EPSG:4326' does not mean the
+  // WMS response is being positioned in lnglat degrees -- `useExactCRSBounds` (srs matches the
+  // view CRS) still puts `bounds` in COMMON SPACE (see `crsUnitsToCommonBounds`), same as any
+  // other CRS view. `renderLayers` must not take the LNGLAT `_imageCoordinateSystem` branch
+  // just because `lastRequestParameters.crs === 'EPSG:4326'` -- that would run
+  // `mercator_to_lnglat()` (BitmapLayer's lnglat-in-cartesian branch) on common-space
+  // coordinates, producing scrambled UVs.
+  const viewport = new CRSViewport({
+    crs: 'EPSG:4326',
+    width: 400,
+    height: 300,
+    longitude: -72,
+    latitude: 40,
+    zoom: 6
+  });
+  const {layer, source, finalize} = mountWMSLayer(viewport); // srs defaults to 'auto'
+  try {
+    await layer.loadImage(viewport, 'test');
+
+    expect(source.calls[0].crs).toBe('EPSG:4326');
+    expect((layer.state as any).boundsCoordinateSystem).toBe(COORDINATE_SYSTEM.CARTESIAN);
+
+    const sublayer = layer.renderLayers() as any;
+    expect(sublayer.props.coordinateSystem).toBe(COORDINATE_SYSTEM.CARTESIAN);
+    expect(sublayer.props._imageCoordinateSystem).toBe(COORDINATE_SYSTEM.CARTESIAN);
   } finally {
     finalize();
   }
