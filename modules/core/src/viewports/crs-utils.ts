@@ -230,6 +230,11 @@ function computeNormalizedCRS(definition: CRSDefinition): NormalizedCRS {
   return normalized;
 }
 
+/**
+ * Results are memoized by the `crs` object's identity: a `CRSDefinition` is treated as
+ * immutable after first use. Mutating a definition in place (e.g. swapping its `transform`
+ * or `extent`) returns stale results — pass a new object instead.
+ */
 export function normalizeCRS(crs: CRSDefinition | string): NormalizedCRS {
   if (typeof crs === 'string') {
     const cached = stringCRSCache.get(crs);
