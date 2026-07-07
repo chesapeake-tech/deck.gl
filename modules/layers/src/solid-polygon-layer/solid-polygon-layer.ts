@@ -386,6 +386,34 @@ export default class SolidPolygonLayer<DataT = any, ExtraPropsT extends {} = {}>
     if (geometryConfigChanged) {
       const {polygonTesselator} = this.state;
       const buffers = (props.data as any).attributes || {};
+      const {viewport} = this.context;
+
+      // Bug fix (review, item 4): `initializeState` builds the CRS affine tesselation
+      // `preproject` ONCE, closing over whatever the view center was at mount time (see
+      // `crs-affine-preproject.ts#getPolygonTesselatorPreproject`'s `origin` argument). A
+      // re-tesselation triggered here (this `geometryConfigChanged` branch) can happen long
+      // after the camera has panned away from that original center — reusing the stale origin
+      // would tesselate against an affine approximation that's no longer a good local fit for
+      // where the polygon's vertices actually are. Resolving `preproject` fresh from the
+      // CURRENT viewport at every re-tesselation (rather than only once in `initializeState`)
+      // keeps the origin current; `Tesselator#updateGeometry` merges this into `this.opts` via
+      // `Object.assign`, so the new function replaces the old one on `polygonTesselator.opts`.
+      // Mercator/Globe/full3d/non-lnglat paths are unaffected: `getPolygonTesselatorPreproject`
+      // already returns byte-identical closures for those cases on every call (a cheap
+      // `.bind()`, not a proj-wasm evaluation), and `PROJECTION_MODE.CRS`-view CRS Jacobian/
+      // Hessian lookups are themselves memoized per (crs, origin) (crs-utils.ts), so this adds
+      // no proj-wasm calls on the common (camera-didn't-move-relative-to-crs) path.
+      let {coordinateSystem} = props;
+      if (viewport.isGeospatial && coordinateSystem === 'default') {
+        coordinateSystem = 'lnglat';
+      }
+      const preproject = getPolygonTesselatorPreproject(
+        viewport,
+        coordinateSystem,
+        Boolean(props._full3d),
+        PROJECTION_MODE.CRS
+      );
+
       polygonTesselator.updateGeometry({
         data: props.data,
         normalize: props._normalize,
@@ -396,10 +424,11 @@ export default class SolidPolygonLayer<DataT = any, ExtraPropsT extends {} = {}>
         positionFormat: props.positionFormat,
         wrapLongitude: props.wrapLongitude,
         // TODO - move the flag out of the viewport
-        resolution: this.context.viewport.resolution,
+        resolution: viewport.resolution,
         fp64: this.use64bitPositions(),
         dataChanged: changeFlags.dataChanged,
-        full3d: props._full3d
+        full3d: props._full3d,
+        preproject
       });
 
       this.setState({
