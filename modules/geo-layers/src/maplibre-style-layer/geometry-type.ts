@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-/** Review fix (C3): `@maplibre/maplibre-gl-style-spec`'s `featureFilter`/`createPropertyExpression`
+/** `@maplibre/maplibre-gl-style-spec`'s `featureFilter`/`createPropertyExpression`
  * both implement `$type`/`["geometry-type"]` against `VectorTileFeature`'s numeric `type` code
  * (1 = Point/MultiPoint, 2 = LineString/MultiLineString, 3 = Polygon/MultiPolygon — the vector-tile
  * spec's own convention, mirrored by `@mapbox/vector-tile`/`@loaders.gl/mvt`), not a GeoJSON
- * `Feature`'s string `type: 'Feature'`/`geometry.type`. Handed a plain GeoJSON feature (this
- * adapter's feature shape throughout — Design, "Feature access mirrors GeoJsonLayer's existing
- * accessor convention"), both entry points silently evaluate `$type`/`geometry-type` against
+ * `Feature`'s string `type: 'Feature'`/`geometry.type`. This adapter uses plain GeoJSON features
+ * throughout (mirroring `GeoJsonLayer`'s own accessor convention), so handed one of those features
+ * directly, both entry points would otherwise silently evaluate `$type`/`geometry-type` against
  * `feature.type` ('Feature', matching none of the three codes) and drop every feature a legacy
  * `["==", "$type", "Polygon"]` or expression `["==", ["geometry-type"], "Polygon"]` filter/paint
  * expression was written to match — with no error, just an empty result set. */

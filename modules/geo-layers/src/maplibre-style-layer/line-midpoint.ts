@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-/** The v1 `symbol-placement: 'line'` fallback (Decisions for review #4 in
- * docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md): one horizontal label
+/** The v1 `symbol-placement: 'line'` fallback: one horizontal label
  * anchored at the point half the cumulative line length along the vertex chain — not the
  * geometric bounding-box center, which can land off the line entirely for bent/L-shaped
  * geometries. No curve, no repeated labeling; documented as a fidelity cut, not silently

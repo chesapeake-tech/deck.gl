@@ -34,7 +34,7 @@ type ViewportCRS = {
   transform: {inverse: (xy: [number, number]) => [number, number]};
 };
 
-/** Perf fix (review): `renderLayers()` runs on every frame during camera motion (whenever
+/** `renderLayers()` runs on every frame during camera motion (whenever
  * `shouldUpdateState` sees `changeFlags.somethingChanged`), and `backgroundCoveringFeature`
  * previously rebuilt the covering feature from scratch on EVERY call — `EXTENT_SAMPLES * 4 + 1`
  * (33) `crs.transform.inverse` calls plus a fresh `Feature` allocation — even though the
@@ -70,7 +70,7 @@ function densifyExtentRing(extent: [number, number, number, number]): [number, n
   return [...bottom, ...right, ...top, ...left, bottom[0]];
 }
 
-/** Review fix (Round 8 finding 3): `background` style layers have no source features to derive
+/** `background` style layers have no source features to derive
  * a covering shape from — the previous implementation always used a hardcoded ±180°/±90° LNGLAT
  * world rectangle, which is only valid in a Web Mercator (or other whole-world) view. A
  * projected CRS with a much smaller domain (a single UTM zone, a few hundred kilometers wide)

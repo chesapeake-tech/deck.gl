@@ -13,7 +13,7 @@ import {spriteToIconMapping} from './sprite-mapping';
 import {lineMidpoint} from './line-midpoint';
 import type {MapLibreStyleEvaluator, MapLibreSpriteAtlas} from './types';
 import type {StyleLayer} from './style-layer-mappers';
-// Fold-in simplification alongside Review fix (I5): `filterFeatures` (visibility/minzoom/
+// Fold-in simplification: `filterFeatures` (visibility/minzoom/
 // maxzoom/source-layer/`filter`) is now shared with style-layer-mappers.ts instead of
 // duplicated — this file previously had its own copy missing all four of those checks.
 import {toRGBA, zoomDependentBucket, filterFeatures} from './style-layer-mappers';
@@ -30,7 +30,7 @@ function ringShoelaceSum(ring: [number, number][]): number {
   return sum;
 }
 
-/** Review fix (I4): area-weighted centroid of a ring's vertices (the standard polygon-centroid
+/** Area-weighted centroid of a ring's vertices (the standard polygon-centroid
  * formula) — not a bounding-box or plain vertex-average center, which can be pulled off-shape by
  * dense vertex clusters. Only the exterior ring (`rings[0]`) is considered; holes are ignored
  * (documented v1 cut — a label centroid landing inside a small hole is a rare, low-severity
@@ -62,8 +62,8 @@ function polygonCentroid(rings: [number, number][][]): [number, number] {
   return [cx / (6 * area), cy / (6 * area)];
 }
 
-/** Review fix (I4): a `MultiLineString` + `symbol-placement: 'line'` needs the SAME midpoint
- * fallback as a single `LineString` (Decisions for review #4) — applied to whichever part has
+/** A `MultiLineString` + `symbol-placement: 'line'` needs the SAME midpoint
+ * fallback as a single `LineString` — applied to whichever part has
  * the greatest cumulative length, not (say) the first part, which may be a short spur. */
 function longestPartMidpoint(parts: [number, number][][]): [number, number] {
   let longest: [number, number][] = parts[0] ?? [];
@@ -83,7 +83,7 @@ function longestPartMidpoint(parts: [number, number][][]): [number, number] {
   return lineMidpoint(longest);
 }
 
-/** Review fix (I4): the largest sub-polygon (by exterior-ring area) of a `MultiPolygon`,
+/** The largest sub-polygon (by exterior-ring area) of a `MultiPolygon`,
  * centroid of its exterior ring — the same "pick the dominant part" strategy as
  * `longestPartMidpoint` for MultiLineString. */
 function largestPolygonCentroid(polygons: [number, number][][][]): [number, number] {
@@ -101,9 +101,9 @@ function largestPolygonCentroid(polygons: [number, number][][][]): [number, numb
 
 /** Reduces every feature to a single labeling point: `Point` passes through unchanged;
  * `MultiPoint` uses its first position; `LineString`/`MultiLineString` under
- * `symbol-placement: 'line'` use the midpoint fallback (Decisions for review #4, warning once
+ * `symbol-placement: 'line'` use the midpoint fallback (warning once
  * per style-layer id — `longestPartMidpoint` for the Multi- case); `Polygon`/`MultiPolygon`
- * label at their (exterior-ring) centroid (Review fix I4 — not previously handled at all,
+ * label at their (exterior-ring) centroid (previously not handled at all,
  * producing a NaN `getPosition` since `geometry.coordinates` for a polygon is a nested ring
  * array, not a `[lng, lat]` pair). Any feature that still can't produce a finite `[lng, lat]`
  * (an empty/degenerate geometry, or a geometry type with no defined label-point rule, e.g.
@@ -176,7 +176,7 @@ export function mapSymbolIconLayer(
 
   const iconMapping = spriteToIconMapping(spriteAtlas.mapping);
 
-  // Review fix (I3b): MapLibre's `icon-size` is a MULTIPLIER of the sprite's native (logical,
+  // MapLibre's `icon-size` is a MULTIPLIER of the sprite's native (logical,
   // pixelRatio-corrected) size — not an absolute IconLayer `getSize` pixel value.
   // `IconLayer.getSize` (icon-layer-vertex.glsl.ts: `sizePixels = getSize() * sizeScale`) *is*
   // the absolute on-screen pixel size along the mapping's `sizeBasis` dimension (height, by
@@ -224,7 +224,7 @@ export function mapSymbolTextLayer(
     evaluator,
     cache
   );
-  // Review fix (I3c): text-size (16 is the style-spec's own default) and text-color (paint,
+  // text-size (16 is the style-spec's own default) and text-color (paint,
   // '#000000' default) were entirely unmapped — every label rendered at TextLayer's hardcoded
   // default size (32px)/color regardless of the style JSON. `TextLayer.getSize`'s default
   // `sizeUnits` is already 'pixels' (unlike GeoJsonLayer's 'meters' default), matching
@@ -247,7 +247,7 @@ export function mapSymbolTextLayer(
     evaluator,
     cache
   );
-  // Review fix (I2): `priorityValue ?` is falsy for the literal sort-key value `0` — a valid,
+  // `priorityValue ?` is falsy for the literal sort-key value `0` — a valid,
   // common "most important" value in MapLibre's ascending-priority convention — which silently
   // skipped compiling a priority accessor for exactly that case. Check `!== undefined` instead.
   const priorityValue = styleLayer.layout?.['symbol-sort-key'];
@@ -265,19 +265,19 @@ export function mapSymbolTextLayer(
     getSize: (f: unknown) => textSize.evaluate(zoom, f as never),
     getColor: (f: unknown) =>
       toRGBA(textColor.evaluate(zoom, f as never), textOpacity.evaluate(zoom, f as never)),
-    // Browser-font approximation of `text-font` (Decisions for review — accepted v1 cut, no
+    // Browser-font approximation of `text-font` (accepted v1 cut, no
     // glyph-PBF fetch/parity with the style's `glyphs` URL).
     fontFamily: 'sans-serif',
     collisionEnabled: true,
-    // Deviation (caught via app verification, Task 13, not by unit tests): `extensions` always
-    // includes `CollisionFilterExtension`, so `getCollisionPriority` must always resolve to a
+    // Not caught by the unit test suite (only surfaced via manual/browser verification):
+    // `extensions` always includes `CollisionFilterExtension`, so `getCollisionPriority` must always resolve to a
     // real accessor. Explicitly setting the prop to `undefined` (rather than omitting the key)
     // overrides the extension's own `getCollisionPriority` default (0) with `undefined` — deck.gl
     // prop merging is a plain object spread, so an explicit `undefined` value wins over a
     // default — which threw "accessor getCollisionPriority is not a function" the first time
     // this ran in a real browser (a style layer with no `symbol-sort-key`, the common case). Omit
     // the key entirely instead when there is no compiled priority expression.
-    // Review fix (I2): MapLibre's `symbol-sort-key` is LOW-wins ("features with a lower sort key
+    // MapLibre's `symbol-sort-key` is LOW-wins ("features with a lower sort key
     // will have priority", MapLibre style-spec), but `CollisionFilterExtension.getCollisionPriority`
     // is HIGH-wins ("features with higher values are shown preferentially",
     // collision-filter-extension.ts) — negate to translate one convention to the other.

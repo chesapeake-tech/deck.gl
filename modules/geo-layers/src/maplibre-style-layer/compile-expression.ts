@@ -8,8 +8,7 @@ import {withGeometryTypeCode} from './geometry-type';
 /** MapLibre's own camera/composite expressions are defined as interpolation between integer
  * zoom stops (tile buckets are built per integer zoom in mapbox-gl-js/maplibre-gl-js itself) —
  * bucketing to `Math.floor(zoom)` re-evaluates at the same granularity upstream already uses,
- * not a deck.gl-specific shortcut. See
- * docs/superpowers/specs/2026-07-05-crs-mvt-style-adapter-design.md, Decisions for review #3. */
+ * not a deck.gl-specific shortcut. */
 export function zoomBucket(zoom: number): number {
   return Math.floor(zoom);
 }
@@ -26,17 +25,16 @@ export interface CompiledExpression<T> {
   isZoomDependent: boolean;
 }
 
-/** A caller-supplied shorthand — the plan's mapper call sites pass `{type: 'color'}`,
+/** A caller-supplied shorthand — mapper call sites pass `{type: 'color'}`,
  * `{type: 'number'}`, `{type: 'string'}`, `{type: 'array', value: 'number', length: N}`. The
  * real `@maplibre/maplibre-gl-style-spec#createPropertyExpression` needs a fuller
  * `StylePropertySpecification` (an `expression: {interpolated, parameters}` block and a
  * `property-type`) to recognize `["zoom"]`/`["get", ...]` usage and return the correct
  * `'camera'`/`'composite'`/`'source'` expression kind — verified against the real package's
- * runtime behavior, not assumed from the plan's inline sketch (Deviation, Task 7: the plan's
- * literal `{type: 'color'}`/`{type: 'number'}` objects produce an `undefined` expression kind
- * for zoom/data-driven input against the real package, which would always report
- * `isZoomDependent: false`). A caller may also pass an already-full spec (containing
- * `property-type`) directly; it is used as-is. */
+ * runtime behavior: a bare literal `{type: 'color'}`/`{type: 'number'}` object handed to the
+ * real package directly produces an `undefined` expression kind for zoom/data-driven input,
+ * which would always report `isZoomDependent: false`. A caller may also pass an already-full
+ * spec (containing `property-type`) directly; it is used as-is. */
 type ShorthandPropertySpec = {
   type: 'color' | 'number' | 'string' | 'array';
   value?: 'number' | 'string';
@@ -75,7 +73,7 @@ function toFullPropertySpec(propertySpec: unknown): Record<string, unknown> {
  * literal-wrapping before parsing; do it here so mapper call sites can pass idiomatic style
  * JSON values without pre-wrapping them. Expression arrays (e.g. `["get", "x"]`, `["==", ...]`)
  * always start with a string operator and are left untouched. */
-/** Review fix (M3): the legacy (pre-expression, Mapbox Style Spec v7-era) `"{token}"` string
+/** The legacy (pre-expression, Mapbox Style Spec v7-era) `"{token}"` string
  * syntax — e.g. `text-field: "{name}"`, still common in older/hand-written styles — is NOT
  * token-substituted by `createPropertyExpression` itself; handed through unmodified it parses
  * as a `'constant'` string expression that always evaluates to the literal text
@@ -134,16 +132,16 @@ function isLegacyStopsFunction(
   );
 }
 
-/** Review fix (Round 8 finding, fork feedback #4): normalizes a legacy `{stops: [...]}`
+/** Normalizes a legacy `{stops: [...]}`
  * zoom/property function into a real expression via the injected evaluator's own
  * `convertFunction` (`@maplibre/maplibre-gl-style-spec`'s export) — real MapLibre style
  * validation performs this exact conversion one layer above `createPropertyExpression`, which
  * otherwise rejects the bare object outright ("Bare objects invalid", verified against the real
- * package). Real-world styles (CARTO, Esri) still author zoom-dependent paint/layout this way —
- * this was previously left to callers to preprocess (the app-side workaround this review
- * responds to); belongs in the adapter since it already requires the same package for
- * `createPropertyExpression`/`featureFilter`. A non-legacy `value` (the overwhelmingly common
- * case) passes through unchanged without needing `convertFunction` at all. */
+ * package). Real-world styles (CARTO, Esri) still author zoom-dependent paint/layout this way,
+ * so this conversion belongs in the adapter itself rather than being left to callers to
+ * preprocess — it already requires the same package for `createPropertyExpression`/
+ * `featureFilter`. A non-legacy `value` (the overwhelmingly common case) passes through
+ * unchanged without needing `convertFunction` at all. */
 function convertLegacyStopsFunction(
   value: unknown,
   fullSpec: Record<string, unknown>,
@@ -193,7 +191,7 @@ function collectNumericArrayLeaves(node: unknown, leaves: number[][]): void {
   for (const child of node) collectNumericArrayLeaves(child, leaves);
 }
 
-/** Review fix (Round 8 finding, fork feedback #4): `line-dasharray`'s array-typed values are
+/** `line-dasharray`'s array-typed values are
  * cyclic (see {@link cyclicRepeat}), but a zoom function whose stops mix different array
  * lengths — CARTO ships `line-dasharray: [1]` at z5 and `[2, 2]` at z7 — fails
  * `createPropertyExpression`'s array-length unification once compiled to a `step` expression
@@ -227,19 +225,18 @@ function equalizeNumericArrayStops(value: unknown): {value: unknown; length?: nu
   return {value: rewrite(value), length: targetLength};
 }
 
-/** Review fix (I6): a cache shared across every `compileExpression`/`compileFilter` call for one
+/** A cache shared across every `compileExpression`/`compileFilter` call for one
  * style (constructed once per style+evaluator identity by the composite's `updateState` — see
  * `maplibre-style-layer.ts`), keyed on the paint/layout `value` reference (stable across tile
  * renders and zoom-bucket re-renders because it's read from the same `style.layers[...].paint`
  * object every time, not recreated). Compiling a MapLibre expression is real parse/validate
- * work (`createPropertyExpression`'s own AST build) — without this cache it reran once per
- * style layer *per tile render*, including every zoom-bucket-triggered re-render the C1 fix
- * added, which is exactly the "clean substrate for C1" the review asked for. */
+ * work (`createPropertyExpression`'s own AST build) — without this cache it reruns once per
+ * style layer *per tile render*, including on every zoom-bucket-triggered re-render. */
 export type CompileCache = Map<unknown, unknown>;
 
 /** Compiles one paint/layout property value once via the injected evaluator's
  * `createPropertyExpression`, returning a per-feature evaluator plus whether it needs
- * per-zoom-bucket re-evaluation (Decisions for review #3). */
+ * per-zoom-bucket re-evaluation. */
 export function compileExpression<T>(
   value: unknown,
   propertySpec: unknown,
@@ -248,8 +245,8 @@ export function compileExpression<T>(
 ): CompiledExpression<T> {
   const cached = cache?.get(value) as CompiledExpression<T> | undefined;
   if (cached) return cached;
-  // Review fix (C2): the injected evaluator is a structural contract (Decisions for review #2),
-  // not a typechecked import — a caller can hand in the wrong shape (e.g. a partial mock, or a
+  // The injected evaluator is a structural contract, not a typechecked import — a caller can
+  // hand in the wrong shape (e.g. a partial mock, or a
   // typo'd property name) and get no compile-time signal. Fail fast with a clear message rather
   // than letting `undefined(...)` throw a generic TypeError deep inside a render pass.
   if (typeof evaluator?.createPropertyExpression !== 'function') {
@@ -262,7 +259,7 @@ export function compileExpression<T>(
   const fullSpec = toFullPropertySpec(propertySpec);
   const convertedValue = convertLegacyStopsFunction(value, fullSpec, evaluator);
   let input = normalizeExpressionInput(convertedValue);
-  // Review fix (Round 8 finding, fork feedback #4): only array-typed properties (in practice,
+  // Only array-typed properties (in practice,
   // `line-dasharray`) need stop-length equalization — a no-op probe for every other property
   // type (color/number/string values don't contain numeric-array leaves in their expression
   // tree; see `equalizeNumericArrayStops`'s doc comment).
@@ -277,7 +274,7 @@ export function compileExpression<T>(
     result?: string;
     value?: {kind: string; evaluate: (globals: unknown, feature?: unknown) => unknown};
   };
-  // Review fix (C2): `createPropertyExpression` returns
+  // `createPropertyExpression` returns
   // `{result: 'error', value: ExpressionParsingError[]}` on failure — `value` is a truthy array
   // of error objects, not falsy, so the previous `if (!compiled) throw` never fired; the array
   // was then used as if it were `{kind, evaluate}`, producing an opaque "evaluate is not a
@@ -301,7 +298,7 @@ export function compileExpression<T>(
   const isZoomDependent = compiled.kind === 'camera' || compiled.kind === 'composite';
   const compiledExpression: CompiledExpression<T> = {
     isZoomDependent,
-    // Review fix (C3): the same VectorTileFeature numeric geometry-type shim compileFilter uses
+    // The same VectorTileFeature numeric geometry-type shim compileFilter uses
     // — an ["geometry-type"] operand inside a paint/layout expression needs it too, or it
     // silently evaluates against `feature.type === 'Feature'` instead of the real geometry.
     evaluate: (zoom, feature) =>
