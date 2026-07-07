@@ -48,10 +48,15 @@ type _WMSLayerProps = {
    * validated). In a CRS view (`MapView({crs})`), this should also match the view's
    * `crs.code` — the layer positions the returned image as an exact rectangle in the
    * view's CRS, so a mismatch means the server projects the image into a *different*
-   * CRS than the one the view renders, which this layer cannot position exactly. When
-   * a mismatch is detected, a warning is logged once and the image falls back to being
-   * positioned via its (approximate) LNGLAT bounds, as it always was for Mercator/4326
-   * views.
+   * CRS than the one the view renders, which this layer cannot position exactly. When a
+   * mismatch is detected, the layer falls back to a request bbox in lnglat degrees (as it
+   * always did for Mercator/4326 views). That fallback bbox is only correctly expressed
+   * for a mismatched `srs` of `'EPSG:4326'` or `'EPSG:3857'` — for either, a warning is
+   * logged once and the image is positioned via its (approximate) LNGLAT bounds. Any
+   * OTHER mismatched `srs` gets a distinct "unsupported combination" warning instead: the
+   * fallback bbox is still lnglat degrees, but tagged with that unrelated `srs`, which
+   * most WMS servers will reject or misinterpret (see wms-layer.md for the full
+   * breakdown).
    *
    * `'auto'` (default) resolves to `'EPSG:4326'`/`'EPSG:3857'` outside a CRS view (as
    * before), and to the view's `crs.code` inside one.
@@ -162,12 +167,19 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
       new BitmapLayer({
         ...this.getSubLayerProps({id: 'bitmap'}),
         // Preserved exactly as before for the Mercator/4326 path (`bounds` in LNGLAT).
-        // In the CRS path (`boundsCoordinateSystem` set below) this also evaluates to
-        // CARTESIAN, which is what we want: `bounds` is already an exact CRS-unit
-        // rectangle in common space, linear in both the image's own pixel space and
-        // (by construction) common space, so no further coordinate conversion applies.
+        // `boundsCoordinateSystem !== undefined` marks the CRS exact-bounds path
+        // (`useExactCRSBounds` in `_getRequestBounds`): there, `bounds` is already an exact
+        // CRS-unit rectangle in COMMON SPACE (see `crsUnitsToCommonBounds`), not lnglat
+        // degrees -- this holds even when the view CRS's own code happens to be the string
+        // 'EPSG:4326' (a geographic CRS view), where `lastRequestParameters.crs` also reads
+        // 'EPSG:4326' but does NOT mean "lnglat-degrees bounds". Gating on
+        // `boundsCoordinateSystem` (the same condition that produced CARTESIAN bounds)
+        // rather than re-deriving from `lastRequestParameters.crs` keeps the two conditions
+        // from being able to disagree. Bug found by review: the crs-code check alone took the
+        // LNGLAT branch in exactly this case, which made BitmapLayer's lnglat-in-cartesian
+        // branch run `mercator_to_lnglat()` on common-space coordinates -- scrambled UVs.
         _imageCoordinateSystem:
-          lastRequestParameters.crs === 'EPSG:4326'
+          boundsCoordinateSystem === undefined && lastRequestParameters.crs === 'EPSG:4326'
             ? COORDINATE_SYSTEM.LNGLAT
             : COORDINATE_SYSTEM.CARTESIAN,
         // Only set in the CRS path; otherwise inherit the default (LNGLAT for a
@@ -309,12 +321,30 @@ export class WMSLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
       const mismatchKey = `${srs}|${crsViewport.crs.code}`;
       if (this.state._lastSrsMismatchWarned !== mismatchKey) {
         this.state._lastSrsMismatchWarned = mismatchKey;
-        log.warn(
-          `WMSLayer: srs "${srs}" does not match the view CRS "${crsViewport.crs.code}". ` +
-            'The WMS server will project the requested image into a different CRS than ' +
-            'the view renders, so it cannot be positioned as an exact rectangle; falling ' +
-            'back to its (approximate) LNGLAT bounds.'
-        )();
+        // `_getRequestBounds`'s non-exact fallback only builds a request bbox that actually
+        // matches the declared `crs`/`srs` for two cases: EPSG:4326 (raw lnglat degrees, which
+        // ARE EPSG:4326) and EPSG:3857 (converted via WGS84ToPseudoMercator). For any OTHER
+        // mismatched srs, the fallback still sends lnglat-degree bounds but tags them with that
+        // arbitrary srs code -- the WMS server would interpret those degree values as being in
+        // its (likely projected/meters) units, an unsupported/nonsensical combination, not
+        // merely an "approximate" positioning -- so it gets a distinct, more pointed warning
+        // rather than the (accurate only for 4326/3857) approximate-LNGLAT-bounds message.
+        if (srs === 'EPSG:4326' || srs === 'EPSG:3857') {
+          log.warn(
+            `WMSLayer: srs "${srs}" does not match the view CRS "${crsViewport.crs.code}". ` +
+              'The WMS server will project the requested image into a different CRS than ' +
+              'the view renders, so it cannot be positioned as an exact rectangle; falling ' +
+              'back to its (approximate) LNGLAT bounds.'
+          )();
+        } else {
+          log.warn(
+            `WMSLayer: srs "${srs}" is unsupported here -- it matches neither the view CRS ` +
+              `"${crsViewport.crs.code}" (which would request exact CRS-unit bounds) nor ` +
+              'EPSG:4326/EPSG:3857 (the only srs codes the fallback bbox can correctly express). ' +
+              'The request bbox will be sent as lnglat degrees mislabeled with this srs, which ' +
+              'most WMS servers will reject or misinterpret.'
+          )();
+        }
       }
     }
     return srs;

@@ -246,7 +246,9 @@ If `'auto'`:
 - Outside a CRS view, the layer requests `'EPSG:3857'` in `MapView`, and `'EPSG:4326'` otherwise (unchanged from previous releases).
 - Inside a [CRS view](#rendering-in-a-non-mercator-crs-view) (`MapView({crs})`), the layer requests the view's own `crs.code`.
 
-In a CRS view, `srs` should match the view's `crs.code`. The layer positions the returned image as an exact rectangle in the view's CRS, so a mismatch means the WMS server projects the image into a *different* CRS than the one the view renders, which the layer cannot position exactly. When a mismatch is detected, a warning is logged once and the image falls back to being positioned via its (approximate) LNGLAT bounds, the same as a Mercator/4326 view.
+In a CRS view, `srs` should match the view's `crs.code`. The layer positions the returned image as an exact rectangle in the view's CRS, so a mismatch means the WMS server projects the image into a *different* CRS than the one the view renders, which the layer cannot position exactly.
+
+When a mismatch is detected, the layer falls back to a request bbox in lnglat degrees (the same `viewport.getBounds()`-based approach used outside a CRS view) — this only produces a request the WMS server can correctly interpret when the mismatched `srs` is itself `'EPSG:4326'` (degrees) or `'EPSG:3857'` (converted to pseudo-Mercator meters); for either of those two codes, a warning is logged once and the image is positioned via its (approximate) LNGLAT bounds. For any *other* mismatched `srs` (e.g. a different UTM zone than the view's own), the fallback bbox is still built in lnglat degrees but sent tagged with that unrelated `srs` code — most WMS servers will reject or misinterpret this combination — so a distinct warning is logged instead, naming the srs as unsupported. The layer does not silently substitute a different `srs` value in the request, since that could break servers expecting the explicitly declared `srs`/`crs` back from `GetCapabilities`.
 
 
 ### Callbacks

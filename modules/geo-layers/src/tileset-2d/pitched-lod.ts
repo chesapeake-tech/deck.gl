@@ -41,6 +41,37 @@ export type PitchedLODOptions = {
   clipBounds?: Bounds;
 };
 
+/** Resolves one distance band's tile-matrix-set level from its measured ground resolution.
+ * `zoomOffset` is applied as an INDEX SHIFT on the level `selectTileMatrix` would otherwise
+ * pick -- matching `warp-mesh.ts#selectWarpSourceZoom`'s treatment of the same option
+ * (`selectTileMatrix(...) + zoomOffset`) -- NOT as a resolution-scaling factor applied
+ * before `selectTileMatrix` (i.e. NOT `selectTileMatrix(tms, targetUnitsPerPixel *
+ * 2**-zoomOffset)`, which this function replaced).
+ *
+ * For a strictly dyadic TMS (each level's `cellSize` exactly half the previous) the two
+ * are equivalent: halving the target resolution and shifting the picked index by one land
+ * on the same level either way. They diverge for a non-dyadic TMS, e.g. GIBS's irregular
+ * 2->3->5->10 cellSize progression, where "shift the selected index by N" and "look up the
+ * level nearest to resolution/2^N" are different questions with different answers (bug
+ * found by review: this file used resolution-scaling while `warp-mesh.ts` used index-shift
+ * for the same `zoomOffset` option, so the two could pick different levels for the same
+ * non-dyadic TMS and target resolution).
+ *
+ * Exported for direct unit coverage (`pitched-lod.node.spec.ts`) without needing to drive
+ * the full banded traversal above just to exercise this one selection rule. */
+export function selectBandLevel(
+  tms: NormalizedTileMatrixSet,
+  targetUnitsPerPixel: number,
+  zoomOffset: number,
+  minLevel: number,
+  maxLevel: number
+): number {
+  return Math.max(
+    minLevel,
+    Math.min(maxLevel, selectTileMatrix(tms, targetUnitsPerPixel) + zoomOffset)
+  );
+}
+
 /** Screen rows above this far/near ground-resolution ratio warrant a coarser far band.
  * Below it the whole view resolves to essentially one level, so the single-level path
  * (which this helper defers to by returning `null`) is already optimal — and, critically,
@@ -141,14 +172,12 @@ export function selectPitchedBandTiles(opts: PitchedLODOptions): BandTileIndex[]
     if (midRes === null || midRes <= 0) {
       return null;
     }
-    // zoomOffset shifts the band's target resolution by 2^-zoomOffset — for a dyadic pyramid
-    // this moves the selected level by exactly +zoomOffset, matching the callers' view-center
-    // formulas (which fold zoomOffset into `maxLevel`), so near bands land on the same level
-    // the single-level path would pick.
-    const level = Math.max(
-      minLevel,
-      Math.min(maxLevel, selectTileMatrix(tms, midRes * Math.pow(2, -zoomOffset)))
-    );
+    // zoomOffset is applied as an index shift on the selected level (see `selectBandLevel`'s
+    // doc comment) — matching both `warp-mesh.ts#selectWarpSourceZoom`'s treatment of the
+    // same option and the callers' own single-level (view-center) formulas, which fold
+    // zoomOffset into `maxLevel` the same way, so near bands land on the same level the
+    // single-level path would pick, exactly for non-dyadic TMSs too.
+    const level = selectBandLevel(tms, midRes, zoomOffset, minLevel, maxLevel);
     // Band footprint AABB from its corners, edge midpoints, and center-edge midpoints — the
     // extra samples keep the hull tight where a curved CRS bows the band's edges.
     const pts = [
