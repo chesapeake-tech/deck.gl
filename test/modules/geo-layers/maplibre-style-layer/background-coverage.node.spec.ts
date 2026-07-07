@@ -62,3 +62,73 @@ test('backgroundCoveringFeature#CRS (UTM) viewport: covers the CRS extent, not a
   expect(viewport.latitude).toBeGreaterThan(Math.min(...lats));
   expect(viewport.latitude).toBeLessThan(Math.max(...lats));
 });
+
+// Perf fix (review): `renderLayers()` runs on every frame during camera motion (whenever
+// `shouldUpdateState` sees `changeFlags.somethingChanged`, which a pan/zoom/pitch triggers), and
+// previously rebuilt the covering feature -- and, one level up in `mapBackgroundLayer`
+// (style-layer-mappers.ts), a fresh `[feature]` wrapping array -- from scratch on every single
+// call: 33 `crs.transform.inverse` calls (`densifyExtentRing`'s 32 samples + the repeated first
+// point) plus a fresh `Feature`/array allocation, which propagated into `GeoJsonLayer`'s
+// `data` prop changing reference every frame and forcing a full re-tessellation each time, even
+// though the CRS (and so the true covering shape) never changed. `backgroundCoveringFeature`
+// must return the SAME `Feature` reference for the same `crs` identity across calls.
+test('backgroundCoveringFeature#CRS viewport: memoized per crs identity (same reference across repeated calls, no repeated transform.inverse work)', () => {
+  // `CRSViewport`'s constructor re-runs `normalizeCRS(opts.crs)` on every construction (a
+  // separate, pre-existing characteristic of `CRSViewport`, not something this fix changes),
+  // so two independently-constructed viewports never share a `.crs` *object* even when built
+  // from the same `CRSDefinition` input -- the realistic scenario this fix targets is instead
+  // the SAME viewport instance (`this.context.viewport`, stable for the duration of one
+  // render/frame) being passed to `backgroundCoveringFeature` more than once, e.g. two
+  // `MapLibreStyleLayer` instances (or two background style layers) sharing one frame's
+  // viewport -- the covering shape depends only on `crs.extent`/`crs.transform`, not on
+  // pan/zoom/pitch, so repeated calls with the SAME `viewport.crs` reference must return the
+  // exact same `Feature` object, not recompute the 33-sample densified ring each time.
+  const viewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 5
+  });
+
+  const feature1 = backgroundCoveringFeature(viewport as any);
+  const feature2 = backgroundCoveringFeature(viewport as any);
+  expect(feature2).toBe(feature1);
+
+  // A DIFFERENTLY-CONSTRUCTED viewport (even from the identical `CRSDefinition` input) gets its
+  // own `.crs` object per `normalizeCRS`'s per-construction behavior above, so it must not
+  // (and structurally cannot) share the first viewport's cache entry.
+  const otherViewport = new CRSViewport({
+    crs: UTM18N,
+    width: 800,
+    height: 600,
+    longitude: -72,
+    latitude: 40,
+    zoom: 5
+  });
+  const otherFeature = backgroundCoveringFeature(otherViewport as any);
+  expect(otherFeature).not.toBe(feature1);
+  // ...but is still equal in VALUE -- the memoization is a cache, not a change in output.
+  expect(otherFeature).toEqual(feature1);
+});
+
+test('backgroundCoveringFeature#Mercator (non-CRS) viewport: same module-constant reference across calls', () => {
+  const viewport1 = new WebMercatorViewport({
+    width: 800,
+    height: 600,
+    longitude: 0,
+    latitude: 0,
+    zoom: 3
+  });
+  const viewport2 = new WebMercatorViewport({
+    width: 400,
+    height: 300,
+    longitude: 10,
+    latitude: 5,
+    zoom: 8
+  });
+  expect(backgroundCoveringFeature(viewport2 as any)).toBe(
+    backgroundCoveringFeature(viewport1 as any)
+  );
+});

@@ -105,6 +105,45 @@ export function zoomDependentBucket(
   return compiled.some(c => c?.isZoomDependent) ? zoomBucket(zoom) : undefined;
 }
 
+/** Default covering feature when the caller supplies no `coveringFeature` (a Mercator/non-CRS
+ * viewport, see `background-coverage.ts`'s `WORLD_RECT`, which this mirrors) — hoisted to a
+ * module constant (rather than allocated inline on every call) so the no-`coveringFeature` path
+ * is itself already reference-stable, matching `WORLD_RECT`'s own memoization-for-free. */
+const DEFAULT_COVERING_FEATURE: Feature = {
+  type: 'Feature',
+  properties: {},
+  geometry: {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [-180, -90],
+        [180, -90],
+        [180, 90],
+        [-180, 90],
+        [-180, -90]
+      ]
+    ]
+  }
+};
+
+/** Perf fix (review): `mapBackgroundLayer` runs once per `renderLayers()` call, which runs on
+ * every frame during camera motion — `data: [feature]` previously allocated a fresh wrapping
+ * array on every call even when `feature` itself hadn't changed (identical reference, whether
+ * the caller-supplied `coveringFeature` — itself now memoized per crs identity, see
+ * `background-coverage.ts` — or `DEFAULT_COVERING_FEATURE` above), which propagated into
+ * `GeoJsonLayer`'s `data` prop as a changed reference and forced a full re-tessellation every
+ * frame regardless. `WeakMap`, mirroring `crs-utils.ts`'s `memoizedByOrigin` pattern. */
+const dataArrayCache = new WeakMap<Feature, Feature[]>();
+
+function getDataArray(feature: Feature): Feature[] {
+  let dataArray = dataArrayCache.get(feature);
+  if (!dataArray) {
+    dataArray = [feature];
+    dataArrayCache.set(feature, dataArray);
+  }
+  return dataArray;
+}
+
 /** `background` style layers have no source data — one full-viewport-covering polygon. */
 export function mapBackgroundLayer(
   styleLayer: StyleLayer,
@@ -132,27 +171,10 @@ export function mapBackgroundLayer(
     evaluator,
     cache
   );
-  const feature: Feature =
-    coveringFeature ??
-    ({
-      type: 'Feature',
-      properties: {},
-      geometry: {
-        type: 'Polygon',
-        coordinates: [
-          [
-            [-180, -90],
-            [180, -90],
-            [180, 90],
-            [-180, 90],
-            [-180, -90]
-          ]
-        ]
-      }
-    } as Feature);
+  const feature: Feature = coveringFeature ?? DEFAULT_COVERING_FEATURE;
   return new GeoJsonLayer({
     id: `maplibre-${styleLayer.id}`,
-    data: [feature],
+    data: getDataArray(feature),
     filled: true,
     stroked: false,
     getFillColor: () =>
