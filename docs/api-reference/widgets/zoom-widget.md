@@ -126,7 +126,7 @@ The `ZoomWidget` accepts the generic [`WidgetProps`](../core/widget.md#widgetpro
 
 Widget button orientation. Valid options are `vertical` or `horizontal`.
 
-#### `zoomAxis` (string, optional)
+#### `zoomAxis` (string, optional) {#zoomaxis}
 
 * Default: `'all'`
 
@@ -182,4 +182,4 @@ Learn more about how to replace icons in the [styling guide](./styling#replacing
 
 ## Source
 
-[modules/widgets/src/zoom-widget.tsx](https://github.com/visgl/deck.gl/tree/master/modules/widgets/src/zoom-widget.tsx)
+[modules/widgets/src/zoom-widget.tsx](https://github.com/visgl/deck.gl/tree/9.3-release/modules/widgets/src/zoom-widget.tsx)

@@ -276,4 +276,4 @@ new ArcLayer({
 
 ## Source
 
-[modules/layers/src/arc-layer](https://github.com/visgl/deck.gl/tree/master/modules/layers/src/arc-layer)
+[modules/layers/src/arc-layer](https://github.com/visgl/deck.gl/tree/9.3-release/modules/layers/src/arc-layer)

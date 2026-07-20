@@ -21,6 +21,55 @@ Ref: http://keepachangelog.com/en/0.3.0/
 
 ### deck.gl v9.3 Prereleases
 
+#### deck.gl [v9.3.7] - Jul 16 2026
+
+- fix(core): do not write View clearColor into the picking buffer (#10431)
+- fix(mapbox): avoid crash when MapboxOverlay beforeId layer is removed (#10425)
+- fix(widgets): InfoWidget not rendering on hover/click (#10421)
+
+#### deck.gl [v9.3.6] - Jul 2 2026
+
+- fix(widgets): handle negative DMS degrees in CoordinatesGeocoder (#10242)
+- fix(jupyter-widget): remove incorrect widget JSON registration overrides (#10242)
+- fix(layers): add missing `@types/geojson` dependency (#10268)
+
+#### deck.gl [v9.3.5] - Jun 25 2026
+
+- fix(arcgis): update arcgis module to use RenderNode instead of externalRenderers (#10257)
+- fix(geo-layers): Pass zoomOffset through TerrainLayer to child TileLayer (#10382)
+
+#### deck.gl [v9.3.4] - Jun 11 2026
+
+- chore(core) Adopt luma CanvasContext (#10228)
+- fix(core): use correct mjolnir requireFailure key for recognizers (#10323)
+- fix(ColumnLayer): closed shapes with binary data and transition props (#10094)
+
+#### deck.gl [v9.3.3] - May 14 2026
+
+- fix(extensions): MaskExtension compatible with TerrainExtension (#10187)
+- feat(carto): Clipped polygon labels (#10278)
+- feat(core): ViewProps.parameters (#10262)
+- feat(layers): add getPixelOffset prop to ScatterplotLayer (#10178)
+
+#### deck.gl [v9.3.2] - Apr 30 2026
+
+- Fix GeoJsonLayer TypeScript types: elevationScale as number, update deprecated depthTest parameter (#10261)
+- fix(google-maps, arcgis): Wrap external FB handle (#10253)
+- fix(react): Align React widget names with pure js (#10239)
+
+#### deck.gl [v9.3.1] - Apr 17 2026
+
+- feat(widgets): ScrollbarWidget falls back to controller.maxBounds (#10236)
+- fix(widgets): ThemeWidget does not apply theme variables on initial add (#10238)
+- fix(widgets): CoordinateGeocoder edge case handling (#10235)
+- feat(widgets) unify viewId handling (#10234)
+- fix(widgets): SplitterWidget types (#10233)
+
+#### deck.gl [v9.3.0] - Apr 13 2026
+
+deck.gl v9.3 features big improvements to widgets, controllers and WebGPU. Find out more on [What's New](https://deck.gl/docs/whats-new) and [Upgrade Guide](https://deck.gl/docs/upgrade-guide).
+
+
 #### deck.gl [v9.3.0-beta.2] - Apr 11 2026
 
 - fix(widgets): ZoomWidget works with OrthographicView (#10202)

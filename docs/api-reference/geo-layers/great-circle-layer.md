@@ -187,4 +187,4 @@ new GreatCircleLayer({
 
 ## Source
 
-[great-circle-layer](https://github.com/visgl/deck.gl/tree/master/modules/geo-layers/src/great-circle-layer)
+[great-circle-layer](https://github.com/visgl/deck.gl/tree/9.3-release/modules/geo-layers/src/great-circle-layer)

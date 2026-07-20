@@ -229,4 +229,4 @@ new TripsLayer({
 
 # Source
 
-[modules/geo-layers/src/trips-layer](https://github.com/visgl/deck.gl/tree/master/modules/geo-layers/src/trips-layer)
+[modules/geo-layers/src/trips-layer](https://github.com/visgl/deck.gl/tree/9.3-release/modules/geo-layers/src/trips-layer)
