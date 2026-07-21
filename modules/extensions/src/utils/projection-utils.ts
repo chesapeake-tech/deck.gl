@@ -2,11 +2,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
-import {WebMercatorViewport, OrthographicViewport} from '@deck.gl/core';
+import {
+  WebMercatorViewport,
+  OrthographicViewport,
+  _CRSViewport as CRSViewport
+} from '@deck.gl/core';
 import type {Layer, Viewport} from '@deck.gl/core';
 
 /** Bounds in CARTESIAN coordinates */
 export type Bounds = [minX: number, minY: number, maxX: number, maxY: number];
+
+/** Fixed Mercator viewport for projection-independent coordinate conversion */
+const MERCATOR_REFERENCE_VIEWPORT = new WebMercatorViewport({
+  width: 1,
+  height: 1,
+  longitude: 0,
+  latitude: 0,
+  zoom: 0
+});
 
 /*
  * Compute the union of bounds from multiple layers
@@ -42,6 +55,7 @@ export function joinLayerBounds(
 const MAX_VIEWPORT_SIZE = 2048;
 
 /** Construct a viewport that just covers the target bounds. Used for rendering to common space indexed texture. */
+// eslint-disable-next-line complexity
 export function makeViewport(opts: {
   /** The cartesian bounds of layers that will render into this texture */
   bounds: Bounds;
@@ -55,19 +69,32 @@ export function makeViewport(opts: {
   border?: number;
   /** A viewport used to determine the output type */
   viewport: Viewport;
+  /** Whether `bounds` are in absolute Mercator common space (computed via
+   * `getMercatorReferenceViewport`/`lngLatToMercatorCommon`) rather than in `viewport`'s
+   * own common space. When true, geospatial viewports always produce a
+   * `WebMercatorViewport` regardless of `viewport`'s type — the terrain passes pin their
+   * bounds to Mercator space this way. Default false. */
+  mercatorBounds?: boolean;
 }): Viewport | null {
   const {bounds, viewport, border = 0} = opts;
   const {isGeospatial} = viewport;
+  // A non-Mercator geospatial viewport (e.g. a CRS view) projects to its own common
+  // space; the output viewport must be of the same type so that content rendered into
+  // the texture and the fragments that later sample it agree on what "common space" is.
+  const crsViewport = !opts.mercatorBounds && viewport instanceof CRSViewport ? viewport : null;
 
   if (bounds[2] <= bounds[0] || bounds[3] <= bounds[1]) {
     return null;
   }
 
-  const centerWorld = viewport.unprojectPosition([
-    (bounds[0] + bounds[2]) / 2,
-    (bounds[1] + bounds[3]) / 2,
-    0
-  ]);
+  const boundsCenter = [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2, 0];
+  // Unproject geospatial bounds through the viewport's own projection for a CRS view,
+  // otherwise through the Mercator reference (GlobeView would give sphere coords)
+  const centerWorld = crsViewport
+    ? crsViewport.unprojectPosition(boundsCenter)
+    : isGeospatial
+      ? MERCATOR_REFERENCE_VIEWPORT.unprojectPosition(boundsCenter)
+      : viewport.unprojectPosition(boundsCenter);
 
   let {width, height, zoom} = opts;
   if (zoom === undefined) {
@@ -90,8 +117,23 @@ export function makeViewport(opts: {
     }
   }
 
-  // TODO - find a more generic way to construct this viewport
-  // Geospatial viewports may not be web-mercator
+  if (crsViewport) {
+    // Same zoom semantics as Web Mercator: pixels per common unit = 2^zoom for both
+    // viewport types (see CRSViewport's extent-normalized common space).
+    return new CRSViewport({
+      id: viewport.id,
+      x: border,
+      y: border,
+      width,
+      height,
+      crs: crsViewport.crs,
+      longitude: centerWorld[0],
+      latitude: centerWorld[1],
+      zoom,
+      orthographic: true
+    });
+  }
+
   return isGeospatial
     ? new WebMercatorViewport({
         id: viewport.id,
@@ -114,6 +156,39 @@ export function makeViewport(opts: {
         zoom,
         flipY: false
       });
+}
+
+/**
+ * World-space bounds of a top-down (bearing 0, pitch 0) viewport constructed by
+ * `makeViewport`, expressed so that projecting the bottom-left/top-right corners back
+ * through the same projection recovers the viewport's exact common-space extent.
+ *
+ * For a Web Mercator viewport this is `viewport.getBounds()`: the lnglat->common
+ * transform is per-axis separable (x from lng, y from lat), so an axis-aligned bbox
+ * round-trips exactly. A general CRS mixes lng and lat into both common axes; taking
+ * min/max over the four unprojected corners would circumscribe the true footprint and,
+ * once re-projected, skew the box by the grid convergence (~sin(convergence) x extent).
+ * Instead, unproject the two exact common-space corners — the returned lnglat values are
+ * carriers for those corners, not a lnglat-axis-aligned bounding box.
+ */
+export function getViewportWorldBounds(viewport: Viewport): Bounds {
+  if (viewport instanceof CRSViewport) {
+    // Exact common-space extent: the viewport is centered on `center` and maps
+    // 2^zoom (= viewport.scale) pixels to each common unit
+    const commonHalfWidth = viewport.width / (2 * viewport.scale);
+    const commonHalfHeight = viewport.height / (2 * viewport.scale);
+    const [centerX, centerY] = viewport.center;
+    const [west, south] = viewport.unprojectFlat([
+      centerX - commonHalfWidth,
+      centerY - commonHalfHeight
+    ]);
+    const [east, north] = viewport.unprojectFlat([
+      centerX + commonHalfWidth,
+      centerY + commonHalfHeight
+    ]);
+    return [west, south, east, north];
+  }
+  return viewport.getBounds();
 }
 
 /** Returns viewport bounds in CARTESIAN coordinates */

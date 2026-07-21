@@ -112,7 +112,11 @@ export class HeightMapBuilder {
               zoom: viewport.zoom,
               width: Math.min(pixelWidth, MAP_MAX_SIZE),
               height: Math.min(pixelHeight, MAP_MAX_SIZE),
-              viewport
+              viewport,
+              // Bounds above are in absolute Mercator common space (centerMerc); keep
+              // the Mercator render viewport even if the screen viewport is a
+              // different geospatial type
+              mercatorBounds: true
             })
           : null;
       return true;

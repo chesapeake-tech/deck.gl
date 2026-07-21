@@ -156,7 +156,11 @@ export class TerrainCover {
       this.renderViewport = makeViewport({
         bounds: this.bounds,
         zoom: newZoom,
-        viewport
+        viewport,
+        // The terrain pipeline computes its bounds in absolute Mercator common space
+        // (see _updateViewport above); keep the Mercator render viewport even if the
+        // screen viewport is a different geospatial type
+        mercatorBounds: true
       });
     }
 
