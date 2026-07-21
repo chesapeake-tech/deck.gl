@@ -14,7 +14,13 @@ import {
 import type {Texture} from '@luma.gl/core';
 import {equals} from '@math.gl/core';
 import MaskPass from './mask-pass';
-import {joinLayerBounds, getRenderBounds, makeViewport, Bounds} from '../utils/projection-utils';
+import {
+  joinLayerBounds,
+  getRenderBounds,
+  getViewportWorldBounds,
+  makeViewport,
+  Bounds
+} from '../utils/projection-utils';
 // import {debugFBO} from '../utils/debug';
 
 type Mask = {
@@ -183,7 +189,10 @@ export default class MaskEffect implements Effect {
             border: 1
           });
 
-        channelInfo.maskBounds = maskViewport ? maskViewport.getBounds() : [0, 0, 1, 1];
+        // Exact-corner world bounds: projecting these corners back to common space in
+        // the masked layers' draw pass recovers the mask FBO's exact extent (a plain
+        // getBounds() round trip is only exact for Web Mercator, see the helper's doc)
+        channelInfo.maskBounds = maskViewport ? getViewportWorldBounds(maskViewport) : [0, 0, 1, 1];
 
         // @ts-ignore (2532) This method is only called from preRender where maskPass is defined
         maskPass.render({

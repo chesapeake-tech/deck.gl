@@ -3,7 +3,8 @@
 // Copyright (c) vis.gl contributors
 
 import {MapView} from '@deck.gl/core';
-import {GeoJsonLayer, PathLayer, ScatterplotLayer} from '@deck.gl/layers';
+import {GeoJsonLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer} from '@deck.gl/layers';
+import {MaskExtension} from '@deck.gl/extensions';
 import {Proj4Projection} from '@math.gl/proj4';
 
 // Render tests must not add runtime dependencies. `@math.gl/proj4` is already a
@@ -158,5 +159,67 @@ export default [
     viewState: {...UTM_VIEW_STATE, bearing: 30, pitch: 40},
     layers: makeCrsSceneLayers('crs-utm-bearing-pitch'),
     goldenImage: './test/render/golden-images/crs-utm-bearing-pitch.png'
+  },
+  {
+    // MaskExtension in a CRS view: the mask FBO must render through a CRSViewport
+    // (makeViewport constructing the source viewport's type) so that mask bounds and
+    // the masked fragments' common-space positions agree. Before that fix the mask UV
+    // landed far outside [0, 1] and clamped, revealing the full masked geometry.
+    // The scene exercises both sampling paths: the polygon clips by geometry
+    // (maskByInstance: false, geometry.position) and the scatterplot points by anchor
+    // (maskByInstance: true, project_position of worldPosition). Expected output: the
+    // red polygon hard-clips to the mask rectangle's edge mid-polygon, the red and
+    // green points inside the mask remain, the yellow point south of it disappears,
+    // and the unmasked white graticule stays fully visible as a reference.
+    name: 'crs-utm-mask',
+    views: new MapView({crs: UTM18N}),
+    viewState: UTM_VIEW_STATE,
+    layers: [
+      new SolidPolygonLayer({
+        id: 'crs-utm-mask-mask-layer',
+        operation: 'mask',
+        data: [
+          {
+            // Deliberately not axis-aligned in UTM common space (it is a lnglat
+            // rectangle), and edges offset from the graticule's even-degree lines
+            polygon: [
+              [-75.5, 38.5],
+              [-70.5, 38.5],
+              [-70.5, 42.5],
+              [-75.5, 42.5]
+            ]
+          }
+        ],
+        getFillColor: [255, 255, 255]
+      }),
+      new GeoJsonLayer({
+        id: 'crs-utm-mask-masked-polygon',
+        data: POLYGON,
+        stroked: false,
+        filled: true,
+        getFillColor: [200, 0, 0, 255],
+        maskId: 'crs-utm-mask-mask-layer',
+        extensions: [new MaskExtension()]
+      }),
+      new PathLayer({
+        id: 'crs-utm-mask-graticule',
+        data: GRATICULE,
+        getPath: d => d.path,
+        getColor: [255, 255, 255],
+        widthMinPixels: 3
+      }),
+      new ScatterplotLayer({
+        id: 'crs-utm-mask-masked-points',
+        data: POINTS,
+        getPosition: d => d.position,
+        getFillColor: d => d.color,
+        getRadius: 20000,
+        radiusMinPixels: 10,
+        maskId: 'crs-utm-mask-mask-layer',
+        maskByInstance: true,
+        extensions: [new MaskExtension()]
+      })
+    ],
+    goldenImage: './test/render/golden-images/crs-utm-mask.png'
   }
 ];
