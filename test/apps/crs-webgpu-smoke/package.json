@@ -1,0 +1,8 @@
+{
+  "name": "deckgl-test-crs-webgpu-smoke",
+  "private": true,
+  "description": "Headed-Chromium smoke test proving PROJECTION_MODE.CRS renders correctly on a real WebGPU (Metal) device. Run from the repo root: node test/apps/crs-webgpu-smoke/run-smoke.mjs",
+  "scripts": {
+    "smoke": "node run-smoke.mjs"
+  }
+}
