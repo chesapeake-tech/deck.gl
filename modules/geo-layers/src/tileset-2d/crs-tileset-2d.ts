@@ -16,7 +16,9 @@ import type {TileMatrixSet, NormalizedTileMatrixSet} from './tile-matrix-set';
 import type {Bounds, TileIndex} from './types';
 
 /** A viewport with Phase 1 CRS information (duck-typed to avoid a hard dependency on _CRSViewport) */
+// `pitch` is a CRSViewport field (not on the base `Viewport`); `selectPitchedBandTiles` reads it.
 type CRSViewportLike = Viewport & {
+  pitch: number;
   crs: {
     code: string;
     units: 'meters' | 'degrees';

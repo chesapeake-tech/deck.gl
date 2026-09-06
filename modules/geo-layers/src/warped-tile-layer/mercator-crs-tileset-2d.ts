@@ -15,7 +15,8 @@ import {selectPitchedBandTiles} from '../tileset-2d/pitched-lod';
 import {resolveWarpSource, selectWarpSourceZoom} from './warp-mesh';
 import type {WarpTargetCRS, WarpSourceCrs, ResolvedWarpSource} from './warp-mesh';
 
-type CRSViewportLike = Viewport & {crs: WarpTargetCRS};
+// `pitch` is a CRSViewport field (not on the base `Viewport`); `selectPitchedBandTiles` reads it.
+type CRSViewportLike = Viewport & {crs: WarpTargetCRS; pitch: number};
 
 /** Options this tileset reads beyond the base `Tileset2DProps` — the source pyramid description
  * forwarded by `_WarpedTileLayer`. Both default to the built-in Web-Mercator source. */

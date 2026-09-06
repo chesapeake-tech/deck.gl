@@ -78,8 +78,7 @@ export class CompassWidget extends Widget<CompassWidgetProps> {
         ? this.props.label
         : `${this.props.label} (grid vs. true north: ${convergence >= 0 ? '+' : ''}${convergence.toFixed(2)}°)`;
 
-    const tooltipContent =
-      this.props.tooltip === false ? undefined : (this.props.tooltip ?? title);
+    const tooltipContent = this.props.tooltip === false ? undefined : (this.props.tooltip ?? title);
     const ui = (
       <div className="deck-widget-button" style={{perspective: 100}}>
         <Tooltip content={tooltipContent}>

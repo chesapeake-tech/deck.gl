@@ -105,6 +105,8 @@ export default class WarpedTileLayer<DataT = any, ExtraPropsT extends {} = {}> e
   ExtraPropsT &
     Required<{
       _meshResolution?: number | 'auto';
+      sourceTileMatrixSet?: TileMatrixSet | null;
+      sourceCrs?: WarpSourceCrs;
       renderSubLayers?: (
         props: WarpedTileLayerRenderSubLayersProps<DataT>
       ) => Layer | null | LayersList;
