@@ -117,6 +117,38 @@ Parameters (`CreateProj4CRSOptions`):
 Returns a plain `CRSDefinition` object — anything that accepts one (`MapView({crs})`,
 `CRSViewport({crs})`) accepts `createProj4CRS`'s result directly.
 
+## `_createCRSFromProjection`
+
+```js
+import {_createCRSFromProjection as createCRSFromProjection} from '@deck.gl/core';
+import proj4 from 'proj4';
+
+const crs = createCRSFromProjection({
+  projection: proj4('WGS84', '+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs'),
+  toCrs: 'EPSG:32618',
+  fromBounds: [-78, 0, -72, 84]
+});
+```
+
+Builds a meter-based `CRSDefinition` from the options `CustomProjectionView` takes, so one
+set of projection options can configure both views.
+
+Parameters (`CreateCRSFromProjectionOptions`):
+
+* `projection` (`ProjectionConverter`) - `forward(position): number[]` converts WGS84 degrees
+  to CRS meters, and `inverse(position): number[] | null` converts back. A proj4js converter
+  has this shape. XYZ results are cut to XY, and a `null` inverse becomes `[NaN, NaN]`.
+* `toCrs` (string) - CRS name or PROJ string. Passed through to `CRSDefinition#code`.
+* `fromCrs` (string, optional) - Must be `'WGS84'` or `'EPSG:4326'` when given.
+* `fromBounds` ([west, south, east, north], optional) - Passed through to
+  `CRSDefinition#extentGeographic`.
+* `extent` ([minX, minY, maxX, maxY], optional) - Passed through to `CRSDefinition#extent`,
+  and used instead of `fromBounds` when both are given. `CustomProjectionView` has no
+  equivalent. One of `fromBounds`/`extent` is required.
+
+`fromBounds` has a different effect here than in `CustomProjectionView`, which clamps input
+coordinates to it: here it defines the extent, and the view center is clamped to that extent.
+
 ## Zoom is extent-relative
 
 At zoom level `z`, the CRS's `extent` always spans `512 * 2^z` pixels in common space — that's the common-space convention above, applied literally. What that means on the ground depends on how big the extent is:
