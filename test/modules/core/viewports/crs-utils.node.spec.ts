@@ -256,10 +256,7 @@ test('getCRSMetersJacobian#UTM grid convergence at (-72, 40)', () => {
 
   // Scale: common units per meter east/north should each be close to the CRS's
   // commonUnitsPerCRSUnit (1 CRS unit === 1 meter for UTM), modulo the ~0.9996 UTM
-  // central scale factor (which grows slightly away from the central meridian) and a
-  // systematic ~0.25% bias from getCRSMetersJacobian's spherical-Earth degrees-per-meter
-  // conversion (METERS_PER_DEGREE, a mean-circumference constant) versus proj4's
-  // WGS84-ellipsoid longitude scale at this latitude - both expected, not a bug.
+  // central scale factor, which grows slightly away from the central meridian.
   const commonUnitsPerMeterEast = Math.hypot(jacobian[0], jacobian[1]);
   const commonUnitsPerMeterNorth = Math.hypot(jacobian[2], jacobian[3]);
   expect(commonUnitsPerMeterEast / crs.commonUnitsPerCRSUnit).toBeGreaterThan(0.995);
@@ -465,13 +462,56 @@ test('getCRSConvergence#west of the central meridian is negative', () => {
   expect(convergence).toBeLessThan(0);
 });
 
+test('getCRSConvergence#sinusoidal matches the analytic meridian angle', () => {
+  // Sinusoidal shears the graticule: parallels stay horizontal while meridians lean, so the
+  // east column of the Jacobian carries no convergence. On a sphere x = R*lng*cos(lat),
+  // y = R*lat, so the meridian's angle from grid north is atan(lng * sin(lat)), lng in radians.
+  const R = 6371000;
+  const radians = Math.PI / 180;
+  const crs = normalizeCRS({
+    code: 'SINUSOIDAL',
+    transform: {
+      forward: ([lng, lat]) => [R * lng * radians * Math.cos(lat * radians), R * lat * radians],
+      inverse: ([x, y]) => [x / (R * Math.cos(y / R)) / radians, y / R / radians]
+    },
+    extent: [-2.1e7, -1e7, 2.1e7, 1e7],
+    units: 'meters'
+  });
+  for (const [lng, lat] of [
+    [60, 60],
+    [-40, 30],
+    [20, -50]
+  ]) {
+    const expected = Math.atan(lng * radians * Math.sin(lat * radians)) / radians;
+    expect(getCRSConvergence(crs, [lng, lat])).toBeCloseTo(expected, 4);
+  }
+});
+
+test('getCRSMetersJacobian#UTM central meridian scale is the ellipsoidal 0.9996', () => {
+  // On the central meridian the transverse Mercator scale factor is exactly k0 = 0.9996 in
+  // both directions on the WGS84 ellipsoid, at every latitude.
+  const crs = normalizeCRS(UTM18N);
+  for (const lat of [0, 20, 40, 60]) {
+    const jacobian = getCRSMetersJacobian(crs, [-75, lat]);
+    const east = Math.hypot(jacobian[0], jacobian[1]) / crs.commonUnitsPerCRSUnit;
+    const north = Math.hypot(jacobian[2], jacobian[3]) / crs.commonUnitsPerCRSUnit;
+    expect(east).toBeCloseTo(0.9996, 6);
+    expect(north).toBeCloseTo(0.9996, 6);
+  }
+  // Conformal: the east and north scales stay equal away from the central meridian
+  const jacobian = getCRSMetersJacobian(crs, [-72, 40]);
+  expect(Math.hypot(jacobian[0], jacobian[1]) / Math.hypot(jacobian[2], jacobian[3])).toBeCloseTo(
+    1,
+    6
+  );
+});
+
 test('getCRSDistanceScales#UTM', () => {
   const crs = normalizeCRS(UTM18N);
   const scales = getCRSDistanceScales(crs, [-75, 0]);
   const k = CRS_WORLD_SIZE / (UTM18N.extent[2] - UTM18N.extent[0]);
-  // 1 CRS unit = 1 meter, modulo the UTM scale factor 0.9996
-  expect(scales.unitsPerMeter[2]).toBeCloseTo(k, 3);
-  expect(scales.unitsPerMeter[2] / k).toBeGreaterThan(0.99);
+  // 1 CRS unit = 1 meter, times the UTM central scale factor 0.9996
+  expect(scales.unitsPerMeter[2] / k).toBeCloseTo(0.9996, 6);
   expect(scales.metersPerUnit[2] * scales.unitsPerMeter[2]).toBeCloseTo(1, 6);
   expect(scales.unitsPerDegree2).toEqual([0, 0, 0]);
 });

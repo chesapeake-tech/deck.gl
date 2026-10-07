@@ -98,6 +98,7 @@ export {mergeShaders as _mergeShaders} from './utils/shader';
 export {compareProps as _compareProps} from './lifecycle/props';
 export {applyStyles as _applyStyles, removeStyles as _removeStyles} from './utils/apply-styles';
 export {getMaxBoundsRect as _getMaxBoundsRect} from './controllers/utils';
+export {getMetersPerDegree as _getMetersPerDegree} from './viewports/crs-utils';
 
 // Types
 export type {CoordinateSystem} from './lib/constants';

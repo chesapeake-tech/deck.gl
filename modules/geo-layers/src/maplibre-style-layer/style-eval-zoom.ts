@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) vis.gl contributors
 
+import {_getMetersPerDegree as getMetersPerDegree} from '@deck.gl/core';
 import {unitsPerMeter} from '@math.gl/web-mercator';
 
 /**
@@ -39,13 +40,23 @@ import {unitsPerMeter} from '@math.gl/web-mercator';
  * that module's *rounded* discrete tile-level selection but would reintroduce a ~0.0016-zoom-level
  * discrepancy here, exactly large enough to matter for `minzoom`/`maxzoom` gating at an
  * integer-zoom boundary.)
+ *
+ * A `CRSViewport` measures meters on the WGS84 ellipsoid, not on `@math.gl/web-mercator`'s
+ * sphere, so for one the zoom comes from the ground resolution of a WGS84 Web Mercator map
+ * instead: one zoom-0 pixel spans `2 * PI * M * cos(latitude) / 512` meters north, where `M` is
+ * the meridional radius of curvature. Without this, the two meters differ by up to ~0.55% and
+ * the zoom by up to ~0.008 levels, enough to flip a `minzoom` gate at a boundary.
  */
 export function mercatorEquivalentZoom(viewport: {
   zoom: number;
   latitude?: number;
   metersPerPixel: number;
+  /** Set on a `CRSViewport`. */
+  crs?: unknown;
 }): number {
   const latitude = viewport.latitude ?? 0;
-  const metersPerPixelAtZoom0 = 1 / unitsPerMeter(latitude);
+  const metersPerPixelAtZoom0 = viewport.crs
+    ? (360 * getMetersPerDegree(latitude)[1] * Math.cos((latitude * Math.PI) / 180)) / 512
+    : 1 / unitsPerMeter(latitude);
   return Math.log2(metersPerPixelAtZoom0 / viewport.metersPerPixel);
 }
