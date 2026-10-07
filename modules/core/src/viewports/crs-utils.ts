@@ -7,8 +7,22 @@ import log from '../utils/log';
 /** Width of the common-space world at zoom 0. Matches Web Mercator's world size. */
 export const CRS_WORLD_SIZE = 512;
 
-/** Meters per degree of latitude (Earth circumference / 360). Matches @math.gl/web-mercator. */
-const METERS_PER_DEGREE = 4.003e7 / 360;
+/** WGS84 semi-major axis in meters and first eccentricity squared. CRS transforms take WGS84
+ * degrees, so ground distances per degree come from this ellipsoid. */
+const WGS84_SEMI_MAJOR_AXIS = 6378137;
+const WGS84_ECCENTRICITY_SQUARED = 0.00669437999014;
+
+/** Ground meters per degree of longitude (east) and of latitude (north) at a latitude, from the
+ * WGS84 parallel and meridional radii of curvature. Latitude is clamped to +/-89.9 so the east
+ * value stays finite near the poles. */
+function getMetersPerDegree(latitude: number): [east: number, north: number] {
+  const lat = (Math.min(Math.max(latitude, -89.9), 89.9) * Math.PI) / 180;
+  const w = 1 - WGS84_ECCENTRICITY_SQUARED * Math.sin(lat) ** 2;
+  const parallelRadius = (WGS84_SEMI_MAJOR_AXIS * Math.cos(lat)) / Math.sqrt(w);
+  const meridionalRadius =
+    (WGS84_SEMI_MAJOR_AXIS * (1 - WGS84_ECCENTRICITY_SQUARED)) / (w * Math.sqrt(w));
+  return [(parallelRadius * Math.PI) / 180, (meridionalRadius * Math.PI) / 180];
+}
 
 /** Finite-difference step for Jacobian estimation, in degrees (~1 meter) */
 const JACOBIAN_STEP = 1e-5;
@@ -378,9 +392,8 @@ export function getCRSJacobian(
  * `[dX/dMeterEast, dY/dMeterEast, dX/dMeterNorth, dY/dMeterNorth]`.
  *
  * Derived from {@link getCRSJacobian} via the chain rule - `J_meters = J_degrees * D`,
- * where `D` is the local degrees-per-meter diagonal (`1 / (METERS_PER_DEGREE * cos(lat))`
- * for east, `1 / METERS_PER_DEGREE` for north, both using the same spherical-Earth
- * `METERS_PER_DEGREE` constant `lngLatToCommon`'s siblings already rely on). This reuses
+ * where `D` is the local degrees-per-meter diagonal from the WGS84 parallel (east) and
+ * meridional (north) radii of curvature (see `getMetersPerDegree`). This reuses
  * the validated finite-difference machinery of `getCRSJacobian` rather than
  * re-differentiating `lngLatToCommon` directly with meter-scale steps: a from-scratch
  * finite difference would still need this same degrees-per-meter conversion to choose a
@@ -403,14 +416,10 @@ export function getCRSMetersJacobian(
     // Reuses getCRSJacobian's own (crs, origin) memoization - a cache hit here costs no
     // extra proj-wasm calls even on a cache miss for this function.
     const [dXdLng, dYdLng, dXdLat, dYdLat] = getCRSJacobian(crs, lnglat);
-    // Uncapped, `cos(lat)` approaches 0 (and this division blows
-    // up) as `|lat|` approaches 90 - mirroring the exact failure mode `map-controller.ts`'s own
-    // `lngLatToWorld` already guards against for a different computation (see its
-    // `Math.abs(lat) > 90` clamp). Clamping `|lat|` to <= 89.9 before `cos()` keeps the result
-    // bounded near the poles instead of diverging.
-    const clampedLat = Math.min(Math.max(lnglat[1], -89.9), 89.9);
-    const degLngPerMeterEast = 1 / (METERS_PER_DEGREE * Math.cos((clampedLat * Math.PI) / 180));
-    const degLatPerMeterNorth = 1 / METERS_PER_DEGREE;
+    // getMetersPerDegree clamps |lat| to 89.9, keeping the east value bounded near the poles
+    const [metersPerDegreeEast, metersPerDegreeNorth] = getMetersPerDegree(lnglat[1]);
+    const degLngPerMeterEast = 1 / metersPerDegreeEast;
+    const degLatPerMeterNorth = 1 / metersPerDegreeNorth;
     return [
       dXdLng * degLngPerMeterEast,
       dYdLng * degLngPerMeterEast,
@@ -496,24 +505,24 @@ export function getCRSHessian(crs: NormalizedCRS, lnglat: number[]): CRSHessian 
  * `γ ≈ Δlng * sin(lat)` small-angle formula (positive when east of the central meridian in
  * the Northern Hemisphere).
  *
- * Derived from {@link getCRSJacobian}'s "east" column (∂common/∂lng), which - because the
- * Jacobian is, to first order, a conformal (rotation + isotropic scale) map - has rotated
- * away from the common-space +X axis by exactly the same angle grid north's own +Y axis has
- * rotated away from true north, under this sign convention. So
- * `atan2(dY/dlng, dX/dlng)` (the east column's angle from +X, standard counterclockwise-
- * positive convention) equals γ directly, with no extra sign flip - verified against the
- * known UTM 18N answer in crs-utils.node.spec.ts.
+ * Derived from {@link getCRSJacobian}'s "north" column (∂common/∂lat), the direction of the
+ * local meridian in common space: `γ = -atan2(dX/dlat, dY/dlat)`, PROJ's definition of
+ * meridian convergence. The east column cannot be used: it gives the same angle only where
+ * meridians and parallels cross at right angles (conformal and normal-aspect conic or
+ * cylindrical projections), and is wrong where the graticule is sheared (e.g. sinusoidal).
+ * Verified against the UTM 18N and sinusoidal known answers in crs-utils.node.spec.ts.
  */
 export function getCRSConvergence(crs: NormalizedCRS, lnglat: number[]): number {
   const jacobian = getCRSJacobian(crs, lnglat);
-  return (Math.atan2(jacobian[1], jacobian[0]) * 180) / Math.PI;
+  // Angle of the meridian (the north column, d/dlat) from grid north, as PROJ defines it
+  return (-Math.atan2(jacobian[2], jacobian[3]) * 180) / Math.PI;
 }
 
 /** Common units per meter of elevation, derived from the meridional scale at the position.
  * For a meters-based CRS this is ~commonUnitsPerCRSUnit; for a degrees CRS it accounts
  * for the degree/meter ratio. */
-function getUnitsPerMeter(jacobian: [number, number, number, number]): number {
-  return Math.hypot(jacobian[2], jacobian[3]) / METERS_PER_DEGREE;
+function getUnitsPerMeter(jacobian: [number, number, number, number], latitude: number): number {
+  return Math.hypot(jacobian[2], jacobian[3]) / getMetersPerDegree(latitude)[1];
 }
 
 /** Clamp a lnglat position so that its projection lies inside the CRS extent.
@@ -615,7 +624,7 @@ export function createProj4CRS(options: CreateProj4CRSOptions): CRSDefinition {
 /** DistanceScales in the shape viewport-uniforms.ts expects from getDistanceScales(origin) */
 export function getCRSDistanceScales(crs: NormalizedCRS, lnglat: number[]) {
   const jacobian = getCRSJacobian(crs, lnglat);
-  const unitsPerMeter = getUnitsPerMeter(jacobian);
+  const unitsPerMeter = getUnitsPerMeter(jacobian, lnglat[1]);
   const unitsPerDegreeX = Math.hypot(jacobian[0], jacobian[1]);
   const unitsPerDegreeY = Math.hypot(jacobian[2], jacobian[3]);
   return {

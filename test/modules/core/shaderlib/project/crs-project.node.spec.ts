@@ -3,7 +3,6 @@
 // Copyright (c) vis.gl contributors
 
 import {test, expect} from 'vitest';
-import {addMetersToLngLat} from '@math.gl/web-mercator';
 import {WebMercatorViewport} from '@deck.gl/core';
 import {PROJECTION_MODE} from '@deck.gl/core/lib/constants';
 import CRSViewport from '@deck.gl/core/viewports/crs-viewport';
@@ -256,10 +255,15 @@ test('CRS shader linearization#METER_OFFSETS grid convergence at 1km', () => {
   });
 
   const offsetMeters: [number, number] = [1000, 0];
-  const targetLngLat = addMetersToLngLat(origin, [offsetMeters[0], offsetMeters[1], 0]) as [
-    number,
-    number,
-    number
+  // 1000m east along the parallel on the WGS84 ellipsoid (addMetersToLngLat assumes a sphere,
+  // which is 0.25% short here). Parallel radius: a * cos(lat) / sqrt(1 - e^2 * sin^2(lat)).
+  const latitude = (origin[1] * Math.PI) / 180;
+  const parallelRadius =
+    (6378137 * Math.cos(latitude)) / Math.sqrt(1 - 0.00669437999014 * Math.sin(latitude) ** 2);
+  const targetLngLat: [number, number, number] = [
+    origin[0] + ((offsetMeters[0] / parallelRadius) * 180) / Math.PI,
+    origin[1],
+    0
   ];
   const exact = viewport.projectPosition(targetLngLat);
 
