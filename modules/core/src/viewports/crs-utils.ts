@@ -621,6 +621,67 @@ export function createProj4CRS(options: CreateProj4CRSOptions): CRSDefinition {
   };
 }
 
+/** A planar map converter, compatible with proj4js converters targeting a meter-based CRS.
+ * Same shape as `CustomProjectionView`'s `ProjectionConverter`. */
+export type ProjectionConverter = {
+  /** Converts world XYZ to map meters: planar X/Y and altitude Z in meters. */
+  forward: (position: number[]) => number[];
+  /** Converts map-meter XYZ back to world coordinates, or returns null outside its domain. */
+  inverse: (position: number[]) => number[] | null;
+};
+
+/** Options for `createCRSFromProjection`. `projection`, `fromCrs`, `toCrs` and `fromBounds`
+ * have the names and meanings of the matching `CustomProjectionView` props. */
+export type CreateCRSFromProjectionOptions = {
+  /** Converts WGS84 degrees to planar CRS meters, and back. */
+  projection: ProjectionConverter;
+  /** World-coordinate CRS. Only WGS84 (`'WGS84'` or `'EPSG:4326'`) is supported. */
+  fromCrs?: string;
+  /** Map CRS name or PROJ string. Used as the CRS `code`. */
+  toCrs: string;
+  /** [west, south, east, north] valid bounds in WGS84 degrees. The projected extent is derived
+   * from them, as for `CRSDefinition#extentGeographic`. */
+  fromBounds?: [number, number, number, number];
+  /** [minX, minY, maxX, maxY] valid bounds in CRS meters. Used instead of `fromBounds` when
+   * given. Has no `CustomProjectionView` equivalent. */
+  extent?: [number, number, number, number];
+};
+
+const WGS84_CRS_NAMES = ['WGS84', 'EPSG:4326'];
+
+/** Builds a meter-based `CRSDefinition` from a `ProjectionConverter`, so the same converter and
+ * CRS options can configure both a CRS `MapView` and `CustomProjectionView`. A converter's
+ * XYZ results are cut to XY, and a null inverse becomes `[NaN, NaN]`, the result the rest of
+ * the CRS code already treats as outside the domain. */
+export function createCRSFromProjection(options: CreateCRSFromProjectionOptions): CRSDefinition {
+  const {projection, fromCrs, toCrs, fromBounds, extent} = options;
+  if (fromCrs !== undefined && !WGS84_CRS_NAMES.includes(fromCrs)) {
+    throw new Error(`CRS ${toCrs}: fromCrs must be WGS84, got ${fromCrs}`);
+  }
+  if (!extent && !fromBounds) {
+    throw new Error(`CRS ${toCrs}: fromBounds or extent is required`);
+  }
+
+  // Pass fresh arrays: a converter may modify its input in place.
+  const transform: CRSTransform = {
+    forward: lnglat => {
+      const xy = projection.forward([lnglat[0], lnglat[1]]);
+      return [xy[0], xy[1]];
+    },
+    inverse: xy => {
+      const lnglat = projection.inverse([xy[0], xy[1]]);
+      return lnglat ? [lnglat[0], lnglat[1]] : [NaN, NaN];
+    }
+  };
+
+  return {
+    code: toCrs,
+    transform,
+    ...(extent ? {extent} : {extentGeographic: fromBounds}),
+    units: 'meters'
+  };
+}
+
 /** DistanceScales in the shape viewport-uniforms.ts expects from getDistanceScales(origin) */
 export function getCRSDistanceScales(crs: NormalizedCRS, lnglat: number[]) {
   const jacobian = getCRSJacobian(crs, lnglat);
