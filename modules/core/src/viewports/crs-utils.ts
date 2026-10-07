@@ -15,7 +15,7 @@ const WGS84_ECCENTRICITY_SQUARED = 0.00669437999014;
 /** Ground meters per degree of longitude (east) and of latitude (north) at a latitude, from the
  * WGS84 parallel and meridional radii of curvature. Latitude is clamped to +/-89.9 so the east
  * value stays finite near the poles. */
-function getMetersPerDegree(latitude: number): [east: number, north: number] {
+export function getMetersPerDegree(latitude: number): [east: number, north: number] {
   const lat = (Math.min(Math.max(latitude, -89.9), 89.9) * Math.PI) / 180;
   const w = 1 - WGS84_ECCENTRICITY_SQUARED * Math.sin(lat) ** 2;
   const parallelRadius = (WGS84_SEMI_MAJOR_AXIS * Math.cos(lat)) / Math.sqrt(w);

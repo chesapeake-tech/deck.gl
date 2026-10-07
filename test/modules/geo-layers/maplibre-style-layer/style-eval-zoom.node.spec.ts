@@ -121,3 +121,35 @@ test('mercatorEquivalentZoom#a shared style layer would resolve wildly different
   expect(crsZoom - mercatorZoom).toBeGreaterThan(5);
   expect(zoomBucket(mercatorZoom)).not.toBe(zoomBucket(crsZoom));
 });
+
+test('mercatorEquivalentZoom#CRS view: matches the WGS84 Web Mercator zoom with the same north ground resolution', () => {
+  // On the central meridian grid north is true north, so a vertical pixel step measures
+  // ground resolution along the meridian. Find the Web Mercator (EPSG:3857, which projects
+  // WGS84 latitudes) zoom whose pixel spans the same latitude step at the view center, using
+  // only the CRS transform and the EPSG:3857 definition.
+  const WEB_MERCATOR_RADIUS = 6378137;
+  const webMercatorY = (latitude: number) =>
+    WEB_MERCATOR_RADIUS * Math.log(Math.tan(Math.PI / 4 + (latitude * Math.PI) / 360));
+
+  for (const latitude of [5, 40, 65]) {
+    const viewport = new CRSViewport({
+      crs: UTM18N,
+      width: 800,
+      height: 600,
+      longitude: -75,
+      latitude,
+      zoom: 7
+    });
+    const step = 10;
+    const [, northLat] = viewport.unproject([400, 300 - step / 2]);
+    const [, southLat] = viewport.unproject([400, 300 + step / 2]);
+    const webMercatorUnitsPerPixel = (webMercatorY(northLat) - webMercatorY(southLat)) / step;
+    const expectedZoom = Math.log2(
+      (2 * Math.PI * WEB_MERCATOR_RADIUS) / (512 * webMercatorUnitsPerPixel)
+    );
+
+    // Tighter than the ~0.0016-zoom offset a spherical meter (40,030 km circumference)
+    // introduces at mid-latitudes, which is enough to flip a minzoom gate at a boundary.
+    expect(Math.abs(mercatorEquivalentZoom(viewport) - expectedZoom)).toBeLessThan(2e-4);
+  }
+});
